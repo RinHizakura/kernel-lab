@@ -23,7 +23,8 @@ function devargs() {
 
 OPTS=
 QEMU_OPTS=
-while getopts ":d:" opt
+BOOTARGS=
+while getopts ":kd:" opt
 do
     case $opt in
         d)
@@ -34,7 +35,21 @@ do
             fi
             QEMU_OPTS+=$args
         ;;
+        k)
+            BOOTARGS+="crashkernel=256M"
+            QEMU_OPTS+="-device vmcoreinfo"
+        ;;
     esac
 done
 
-vng ${OPT} --qemu-opts="$QEMU_OPTS"
+if [[ ! -z $BOOTARGS ]]; then
+    OPT+=" --append='$BOOTARGS'"
+fi
+
+if [[ ! -z $QEMU_OPTS ]]; then
+    OPT+=" -o='$QEMU_OPTS'"
+fi
+
+
+echo vng $OPT
+eval "vng $OPT"

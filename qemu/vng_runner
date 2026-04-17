@@ -50,6 +50,5 @@ if [[ ! -z $QEMU_OPTS ]]; then
     OPT+=" -o='$QEMU_OPTS'"
 fi
 
-
-echo vng $OPT
+echo "Running vng with options: $OPT"
 eval "vng $OPT"

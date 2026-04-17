@@ -50,5 +50,8 @@ if [[ ! -z $QEMU_OPTS ]]; then
     OPT+=" -o='$QEMU_OPTS'"
 fi
 
+# Run vng with bash shell by default, just for faster booting
+OPT+=" --shell /bin/bash"
+
 echo "Running vng with options: $OPT"
 eval "vng $OPT"

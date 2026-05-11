@@ -24,9 +24,13 @@ function devargs() {
 OPTS=
 QEMU_OPTS=
 BOOTARGS=
-while getopts ":kd:" opt
+ARCH=
+while getopts ":ka:d:" opt
 do
     case $opt in
+        a)
+            ARCH=$OPTARG
+        ;;
         d)
             args=`devargs $OPTARG`
             if [ -z "$args" ]; then
@@ -41,6 +45,11 @@ do
         ;;
     esac
 done
+shift $((OPTIND - 1))
+
+if [[ -n $ARCH ]]; then
+    OPT+=" --arch $ARCH"
+fi
 
 if [[ ! -z $BOOTARGS ]]; then
     OPT+=" --append='$BOOTARGS'"
@@ -53,5 +62,5 @@ fi
 # Run vng with bash shell by default, just for faster booting
 OPT+=" --shell /bin/bash"
 
-echo "Running vng with options: $OPT"
-eval "vng $OPT"
+echo "Running vng with options: $OPT $@"
+eval "vng $OPT $@"

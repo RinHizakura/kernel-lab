@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 
 USBIMG=usb.img
+UFSIMG=ufs.img
 
 function devargs() {
     D=$1
     ARGS=
     case $D in
         "usb-storage")
-            if [ ! -f usb.img ]; then
-                dd if=/dev/zero of=$USBIMG bs=1k count=1024
-                mkfs -t ext4 $USBIMG
+            if [ ! -f $USBIMG ]; then
+                dd if=/dev/zero of=$USBIMG bs=1k count=1024 >&2
+                mkfs -t ext4 $USBIMG >&2
             fi
             ARGS="-drive if=none,id=usbstick,format=raw,file=$USBIMG \
                   -usb                                               \
                   -device usb-ehci,id=ehci                           \
                   -device usb-storage,bus=ehci.0,drive=usbstick"
+         ;;
+        "ufs")
+            if [ ! -f $UFSIMG ]; then
+                dd if=/dev/zero of=$UFSIMG bs=1k count=1024 >&2
+                mkfs -t ext4 $UFSIMG >&2
+            fi
+            ARGS="-drive if=none,id=ufslu0,format=raw,file=$UFSIMG \
+                  -device ufs,id=ufs0,nutrs=32,nutmrs=8            \
+                  -device ufs-lu,drive=ufslu0,bus=ufs0"
          ;;
     esac
 

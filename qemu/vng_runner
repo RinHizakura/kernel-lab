@@ -17,6 +17,33 @@ function qemu_suffix() {
     esac
 }
 
+function usage() {
+    cat <<EOF
+Usage: ${0##*/} [-h] [-a ARCH] [-d DEVICE] [-k] [-- VNG_ARGS...]
+
+Thin wrapper around vng (virtme-ng) that attaches extra QEMU devices and
+auto-selects the locally built QEMU under install/bin if present.
+
+Options:
+  -a ARCH     Target architecture passed to vng --arch (e.g. arm64, riscv64).
+              Also selects install/bin/qemu-system-<arch> when available.
+  -d DEVICE   Attach a storage device. Supported:
+                usb-storage   USB EHCI stick backed by $USBIMG
+                ufs           UFS host controller + LU backed by $UFSIMG
+              (disk images are auto-created with ext4 on first use)
+  -k          Enable kdump testing (crashkernel=256M + vmcoreinfo device).
+  -h          Show this help and exit.
+
+Use -- to separate extra vng arguments; everything after it is passed
+straight through to vng untouched.
+
+Examples:
+  ${0##*/} -d ufs                 # boot host kernel with a UFS device
+  ${0##*/} -a arm64 -d usb-storage
+  ${0##*/} -d ufs -- -r ~/linux/stable-linux   # boot a specific kernel tree
+EOF
+}
+
 function devargs() {
     D=$1
     ARGS=
@@ -49,9 +76,13 @@ OPTS=
 QEMU_OPTS=
 BOOTARGS=
 ARCH=
-while getopts ":ka:d:" opt
+while getopts ":hka:d:" opt
 do
     case $opt in
+        h)
+            usage
+            exit 0
+        ;;
         a)
             ARCH=$OPTARG
         ;;
@@ -66,6 +97,16 @@ do
         k)
             BOOTARGS+="crashkernel=256M"
             QEMU_OPTS+="-device vmcoreinfo"
+        ;;
+        \?)
+            echo "Unknown option: -$OPTARG" >&2
+            usage >&2
+            exit 1
+        ;;
+        :)
+            echo "Option -$OPTARG requires an argument" >&2
+            usage >&2
+            exit 1
         ;;
     esac
 done

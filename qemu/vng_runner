@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_BIN="$SCRIPT_DIR/install/bin"
+
 USBIMG=usb.img
 UFSIMG=ufs.img
+
+# Map a vng --arch value to the QEMU system binary suffix.
+function qemu_suffix() {
+    case $1 in
+        arm64)   echo aarch64 ;;
+        armhf)   echo arm     ;;
+        ppc64el) echo ppc64    ;;
+        ""|x86_64) echo x86_64 ;;
+        *)       echo "$1"    ;;   # s390x, riscv64, ... match directly
+    esac
+}
 
 function devargs() {
     D=$1
@@ -59,6 +73,14 @@ shift $((OPTIND - 1))
 
 if [[ -n $ARCH ]]; then
     OPT+=" --arch $ARCH"
+fi
+
+# Use the locally built QEMU under install/ if present, otherwise fall back
+# to the system QEMU that vng picks by default.
+QEMU_BIN="$INSTALL_BIN/qemu-system-$(qemu_suffix "$ARCH")"
+if [[ -x $QEMU_BIN ]]; then
+    echo "Using local QEMU: $QEMU_BIN"
+    OPT+=" --qemu $QEMU_BIN"
 fi
 
 if [[ ! -z $BOOTARGS ]]; then

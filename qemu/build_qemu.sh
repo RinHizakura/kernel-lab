@@ -38,6 +38,7 @@ check_deps() {
     command -v pkg-config >/dev/null || missing+=("pkg-config")
     pkg-config --exists glib-2.0 2>/dev/null || missing+=("libglib2.0-dev")
     pkg-config --exists pixman-1 2>/dev/null || missing+=("libpixman-1-dev")
+    pkg-config --exists slirp   2>/dev/null || missing+=("libslirp-dev")
     if (( ${#missing[@]} )); then
         die "missing build dependencies. Install with:
     sudo apt update && sudo apt install -y ${missing[*]}"
@@ -101,7 +102,7 @@ main() {
     rm -rf "$SRC_DIR/build"
     mkdir -p "$SRC_DIR/build"
     ( cd "$SRC_DIR/build" \
-        && ../configure --prefix="$PREFIX" --target-list="$TARGETS" )
+        && ../configure --prefix="$PREFIX" --target-list="$TARGETS" --enable-slirp )
 
     msg "Building (make -j$JOBS)"
     make -C "$SRC_DIR/build" -j"$JOBS"

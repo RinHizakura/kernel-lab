@@ -7,8 +7,8 @@
 # Ubuntu).
 #
 # Usage:
-#   ./deploy-rpi.sh --target pi@192.168.1.50
-#   DEPLOY_TARGET=pi@raspberrypi.local ./deploy-rpi.sh
+#   ./deploy-rpi-kernel.sh --target pi@192.168.1.50
+#   DEPLOY_TARGET=pi@raspberrypi.local ./deploy-rpi-kernel .sh
 #
 set -euo pipefail
 

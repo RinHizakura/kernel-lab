@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy-kernel.sh — build / deploy / switch a WSL2 custom kernel
+# deploy-wsl-kernel.sh — build / deploy / switch a WSL2 custom kernel
 #
 # Default (build + deploy):
 #   1. Compile the kernel (make -j$(nproc)); a tag is baked into LOCALVERSION

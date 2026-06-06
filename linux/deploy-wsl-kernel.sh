@@ -90,6 +90,15 @@ if [ "$MODE" = "delete" ]; then
   fi
   rm -f "$TARGET"
   log "deleted $TARGET"
+
+  # Drop the matching modules dir (image is named bzImage-<VER>; modules live
+  # at /lib/modules/<VER>). Only the bzImage-<ver> form maps to a module dir.
+  VER="${DELETE_TO#bzImage-}"
+  MODDIR="/lib/modules/$VER"
+  if [ "$VER" != "$DELETE_TO" ] && [ -d "$MODDIR" ]; then
+    sudo rm -rf "$MODDIR"
+    log "deleted modules $MODDIR"
+  fi
   exit 0
 fi
 

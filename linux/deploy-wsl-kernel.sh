@@ -110,6 +110,9 @@ if [ "$MODE" != "switch" ]; then
   DEST_NAME="bzImage-$VER"
   log "kernel version: $VER${TAG:+  (tag: $TAG)}"
 
+  log "installing modules -> /lib/modules/$VER ..."
+  sudo make -s modules_install INSTALL_MOD_STRIP=1 "${LV[@]}"
+
   # compile only: stage a tagged copy (so it's switchable later) but never touch .wslconfig
   if [ "$MODE" = "compile" ]; then
     if [ -n "$TAG" ]; then

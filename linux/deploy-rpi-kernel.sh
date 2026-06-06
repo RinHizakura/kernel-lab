@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 #
-# deploy-rpi-kernel.sh — Cross-build this upstream kernel tree and deploy it
-#                 to a remote Raspberry Pi 4 (arm64) running Ubuntu.
+# deploy-rpi-kernel.sh — Cross-build an upstream kernel tree and deploy it to a
+#                 remote Raspberry Pi 4 (arm64) running Ubuntu.
+#
+# Boot layout (Ubuntu A/B): /boot/firmware/config.txt selects the active boot
+# directory via `os_prefix=`. This script NEVER touches current/ (your stock
+# golden fallback). Instead it:
+#   - builds a per-version slot dir /boot/firmware/<KREL>/ (a clone of current/
+#     with our kernel + initramfs), fully, on disk
+#   - only THEN flips the active os_prefix to <KREL>/
+#
+# Recovery if the new kernel won't boot (from another PC with the SD card, or
+# over UART):
+#   edit /boot/firmware/config.txt: change the active `os_prefix=<KREL>/` back
+#   to `os_prefix=current/`, save, reboot — you're on the stock kernel again.
 #
 # The remote user needs passwordless sudo, and initramfs-tools (default on
 # Ubuntu).
 #
 # Usage:
-#   ./deploy-rpi-kernel.sh --target pi@192.168.1.50
-#   DEPLOY_TARGET=pi@raspberrypi.local ./deploy-rpi-kernel .sh
+#   ./deploy-rpi-kernel.sh --reboot
+#   DEPLOY_TARGET=pi@raspberrypi.local ./deploy-rpi-kernel.sh
 #
 set -euo pipefail
 
@@ -19,17 +31,15 @@ set -euo pipefail
 : "${ARCH:=arm64}"
 : "${CROSS_COMPILE:=aarch64-linux-gnu-}"
 : "${JOBS:=$(nproc)}"
-: "${DTB:=bcm2711-rpi-4-b.dtb}"           # Pi 4 device tree
 : "${DEFCONFIG:=bcm2711_defconfig}"       # in-tree defconfig (arch/arm64/configs/)
-: "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi OS boot partition mount
+: "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi boot partition mount
 : "${LOCALVERSION:=-test}"                # version suffix -> KREL, e.g. 7.0.11-test
-: "${KERNEL_NAME:=}"                       # boot image filename; default kernel-<KREL>.img
 : "${SSH_OPTS:=-o ConnectTimeout=10}"
 : "${KSRC:=}"                             # kernel source tree (set to your tree, absolute path)
 
 DO_BUILD=1
-DO_REBOOT=0
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
+MENUCONFIG=0
 
 # SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
 
@@ -51,13 +61,10 @@ usage() {
 
 Flags:
   --target USER@HOST   SSH target (default: \$DEPLOY_TARGET)
-  -j N                 Parallel build jobs (default: nproc = $JOBS)
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --menuconfig         Run menuconfig after defconfig
   --no-build           Skip the build, deploy existing artifacts
-  --reboot             Reboot the Pi after deploying
-  --kernel-name NAME   Boot image filename (default: vmlinuz-<KREL>)
   -h, --help           This help
 EOF
 }
@@ -65,38 +72,35 @@ EOF
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-MENUCONFIG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)       DEPLOY_TARGET="$2"; shift 2;;
-    -j)             JOBS="$2"; shift 2;;
     --localversion) LOCALVERSION="$2"; shift 2;;
     --defconfig)    DO_DEFCONFIG=force; shift;;
     --menuconfig)   DO_DEFCONFIG=force; MENUCONFIG=1; shift;;
     --no-build)     DO_BUILD=0; shift;;
-    --reboot)       DO_REBOOT=1; shift;;
-    --kernel-name)  KERNEL_NAME="$2"; shift 2;;
     -h|--help)      usage; exit 0;;
     *)              die "Unknown argument: $1 (try --help)";;
   esac
 done
 
 # ---------------------------------------------------------------------------
-# Resolve kernel source tree (KSRC, default: this script's location)
-# ---------------------------------------------------------------------------
-SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd)
-STAGE_DIR="${SRC_DIR}/.deploy-staging"
-log "Kernel source: $SRC_DIR"
-
-MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
-
-# ---------------------------------------------------------------------------
-# Pre-flight checks
+# Resolve kernel source tree (KSRC) + pre-flight
 # ---------------------------------------------------------------------------
 [ "$DEPLOY_TARGET" = "pi@CHANGE-ME" ] && \
   die "Set the SSH target: --target pi@HOST  (or export DEPLOY_TARGET)"
+
+SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd) \
+  || die "KSRC not set or not a directory: '${KSRC}'  (edit KSRC at the top, or export it)"
+[ -f "$SRC_DIR/Makefile" ] && [ -d "$SRC_DIR/arch/$ARCH" ] \
+  || die "KSRC does not look like a kernel tree: $SRC_DIR"
+STAGE_DIR="${SRC_DIR}/.deploy-staging"
+log "Kernel source: $SRC_DIR"
+
 command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || \
   die "Cross compiler ${CROSS_COMPILE}gcc not found in PATH"
+
+MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
 
 # ---------------------------------------------------------------------------
 # 1. Build
@@ -126,15 +130,11 @@ fi
 
 KREL="$("${MAKE[@]}" -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"
-[ -n "$KERNEL_NAME" ] || KERNEL_NAME="vmlinuz-${KREL}"   # Ubuntu naming convention
-INITRD_NAME="initrd.img-${KREL}"
-log "Kernel release: $KREL  ->  $BOOT_DIR/$KERNEL_NAME (+ $INITRD_NAME)"
+log "Kernel release: $KREL  ->  $BOOT_DIR/$KREL/ (boot slot; current/ kept as fallback)"
 
 IMAGE="$SRC_DIR/arch/arm64/boot/Image"
-DTB_SRC="$SRC_DIR/arch/arm64/boot/dts/broadcom/$DTB"
 CONFIG_SRC="$SRC_DIR/.config"
 [ -f "$IMAGE" ]      || die "Missing $IMAGE — run the build first."
-[ -f "$DTB_SRC" ]    || die "Missing $DTB_SRC — run the build first."
 [ -f "$CONFIG_SRC" ] || die "Missing $CONFIG_SRC — run the build first."
 
 # ---------------------------------------------------------------------------
@@ -153,9 +153,9 @@ fi
 log "Checking connectivity to $DEPLOY_TARGET"
 ssh_pi true || die "Cannot reach $DEPLOY_TARGET over SSH"
 
-log "Verifying boot partition at $BOOT_DIR on the Pi"
-ssh_pi "test -d '$BOOT_DIR' && test -f '$BOOT_DIR/config.txt'" \
-  || die "$BOOT_DIR/config.txt not found on the Pi — wrong BOOT_DIR?"
+log "Verifying boot layout at $BOOT_DIR on the Pi"
+ssh_pi "test -d '$BOOT_DIR/current' && grep -q '^os_prefix=' '$BOOT_DIR/config.txt'" \
+  || die "$BOOT_DIR/current not found, or config.txt has no os_prefix= line — wrong layout?"
 
 log "Verifying initramfs tooling on the Pi"
 ssh_pi "command -v mkinitramfs >/dev/null 2>&1" \
@@ -164,54 +164,46 @@ ssh_pi "command -v mkinitramfs >/dev/null 2>&1" \
 REMOTE_TMP="/tmp/kdeploy.$$"
 ssh_pi "mkdir -p '$REMOTE_TMP'"
 
-log "Copying kernel image, DTB, config and modules"
+log "Copying kernel image, config and modules"
 # shellcheck disable=SC2086
-scp $SSH_OPTS "$IMAGE"       "$DEPLOY_TARGET:$REMOTE_TMP/$KERNEL_NAME"
-# shellcheck disable=SC2086
-scp $SSH_OPTS "$DTB_SRC"     "$DEPLOY_TARGET:$REMOTE_TMP/$DTB"
+scp $SSH_OPTS "$IMAGE"       "$DEPLOY_TARGET:$REMOTE_TMP/vmlinuz"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$CONFIG_SRC"  "$DEPLOY_TARGET:$REMOTE_TMP/config-$KREL"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$MOD_TARBALL" "$DEPLOY_TARGET:$REMOTE_TMP/modules.tar.gz"
 
-log "Installing on the Pi (backs up existing files with .bak)"
+log "Staging slot $KREL/ on the Pi, then flipping os_prefix (current/ untouched)"
 ssh_pi "sudo sh -euc '
-  ts=\$(date +%Y%m%d-%H%M%S)
+  set -eu
+  BOOT=\"$BOOT_DIR\"
+  SLOT=\"$KREL\"
+  [ -d \"\$BOOT/current\" ] || { echo \"no \$BOOT/current slot\"; exit 1; }
   # modules first — the initramfs is built from them
-  rm -rf \"/lib/modules/$KREL\"
+  rm -rf \"/lib/modules/\$SLOT\"
   tar -C / -xzf \"$REMOTE_TMP/modules.tar.gz\"
-  depmod \"$KREL\"
-  # kernel image
-  [ -f \"$BOOT_DIR/$KERNEL_NAME\" ] && cp \"$BOOT_DIR/$KERNEL_NAME\" \"$BOOT_DIR/$KERNEL_NAME.bak-\$ts\"
-  install -m644 \"$REMOTE_TMP/$KERNEL_NAME\" \"$BOOT_DIR/$KERNEL_NAME\"
-  # device tree
-  [ -f \"$BOOT_DIR/$DTB\" ] && cp \"$BOOT_DIR/$DTB\" \"$BOOT_DIR/$DTB.bak-\$ts\"
-  install -m644 \"$REMOTE_TMP/$DTB\" \"$BOOT_DIR/$DTB\"
-  # kernel config -> /boot/config-<KREL> so mkinitramfs can verify compression support
-  [ -f \"/boot/config-$KREL\" ] && cp \"/boot/config-$KREL\" \"/boot/config-$KREL.bak-\$ts\"
-  install -m644 \"$REMOTE_TMP/config-$KREL\" \"/boot/config-$KREL\"
-  # initramfs for this kernel version (Ubuntu boots via initrd)
-  mkinitramfs -o \"$BOOT_DIR/$INITRD_NAME\" \"$KREL\"
-  # register kernel + initrd in config.txt (idempotent, non-destructive)
-  cfg=\"$BOOT_DIR/config.txt\"
-  cp \"\$cfg\" \"\$cfg.bak-\$ts\"
-  if ! grep -q \"^kernel=$KERNEL_NAME\$\" \"\$cfg\"; then
-    sed -i \"s/^\\(kernel=.*\\)/#\\1/; s/^\\(initramfs .*\\)/#\\1/\" \"\$cfg\"
-    printf \"\n# Added by deploy-rpi.sh\n[all]\narm_64bit=1\nkernel=$KERNEL_NAME\ninitramfs $INITRD_NAME followkernel\n\" >> \"\$cfg\"
-  fi
+  depmod \"\$SLOT\"
+  # kernel config -> /boot/config-<KREL> so mkinitramfs can verify compression
+  install -m644 \"$REMOTE_TMP/config-\$SLOT\" \"/boot/config-\$SLOT\"
+  # build the per-version slot fully (clone golden current/, overlay our kernel)
+  rm -rf \"\$BOOT/\$SLOT\"
+  cp -r \"\$BOOT/current\" \"\$BOOT/\$SLOT\"
+  install -m644 \"$REMOTE_TMP/vmlinuz\" \"\$BOOT/\$SLOT/vmlinuz\"
+  mkinitramfs -o \"\$BOOT/\$SLOT/initrd.img\" \"\$SLOT\"
+  sync
+  # everything is on disk — NOW flip the active pointer (the commit).
+  cfg=\"\$BOOT/config.txt\"
+  cp \"\$cfg\" \"\$cfg.bak-\$(date +%Y%m%d-%H%M%S)\"
+  sed -i \"0,/^os_prefix=/s#^os_prefix=.*#os_prefix=\$SLOT/#\" \"\$cfg\"
   rm -rf \"$REMOTE_TMP\"
-  echo \"installed kernel=$KERNEL_NAME initrd=$INITRD_NAME config=/boot/config-$KREL modules=$KREL\"
+  echo \"slot \$SLOT/ staged; os_prefix -> \$SLOT/ ; current/ kept as fallback\"
 '"
 
-# ---------------------------------------------------------------------------
-# 4. Reboot
-# ---------------------------------------------------------------------------
-if [ "$DO_REBOOT" = 1 ]; then
-  log "Rebooting the Pi"
-  ssh_pi "sudo reboot" || true
-  log "Reboot issued. After it comes back: ssh $DEPLOY_TARGET 'uname -r' (expect $KREL)"
-else
-  log "Done. Reboot the Pi to use the new kernel:"
-  echo "    ssh $DEPLOY_TARGET 'sudo reboot'"
-  echo "    # then verify:  ssh $DEPLOY_TARGET 'uname -r'   -> $KREL"
-fi
+log "Done. Reboot the Pi to use the new kernel:  ssh $DEPLOY_TARGET 'sudo reboot'"
+
+cat <<EOF
+
+Active slot: $KREL/   (current/ is your untouched stock fallback)
+Recovery if $KREL won't boot (from another PC with the SD card, or via UART):
+  edit $BOOT_DIR/config.txt -> change the first 'os_prefix=$KREL/' back to 'os_prefix=current/'
+  reboot; you're back on the stock kernel.
+EOF

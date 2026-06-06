@@ -33,7 +33,6 @@ set -euo pipefail
 : "${CROSS_COMPILE:=aarch64-linux-gnu-}"
 : "${JOBS:=$(nproc)}"
 : "${DEFCONFIG:=bcm2711_defconfig}"       # in-tree defconfig (arch/arm64/configs/)
-: "${DTB:=bcm2711-rpi-4-b.dtb}"           # Pi 4 device tree (rebuilt and deployed)
 : "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi boot partition mount
 : "${LOCALVERSION:=-test}"                # version suffix -> KREL, e.g. 7.0.11-test
 : "${SSH_OPTS:=-o ConnectTimeout=10}"
@@ -167,11 +166,9 @@ log "Kernel release: $KREL  ->  $BOOT_DIR/new/ (tryboot slot; current/ untouched
 
 IMAGE="$SRC_DIR/arch/arm64/boot/Image"
 CONFIG_SRC="$SRC_DIR/.config"
-DTB_SRC="$SRC_DIR/arch/arm64/boot/dts/broadcom/$DTB"
 SYSMAP_SRC="$SRC_DIR/System.map"
 [ -f "$IMAGE" ]      || die "Missing $IMAGE — run the build first."
 [ -f "$CONFIG_SRC" ] || die "Missing $CONFIG_SRC — run the build first."
-[ -f "$DTB_SRC" ]    || die "Missing $DTB_SRC — run the build first (make dtbs)."
 [ -f "$SYSMAP_SRC" ] || die "Missing $SYSMAP_SRC — run the build first."
 
 # ---------------------------------------------------------------------------
@@ -201,11 +198,9 @@ ssh_pi "command -v mkinitramfs >/dev/null 2>&1" \
 REMOTE_TMP="/tmp/kdeploy.$$"
 ssh_pi "mkdir -p '$REMOTE_TMP'"
 
-log "Copying kernel image, DTB, System.map, config and modules"
+log "Copying kernel image, System.map, config and modules"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$IMAGE"       "$DEPLOY_TARGET:$REMOTE_TMP/vmlinuz"
-# shellcheck disable=SC2086
-scp $SSH_OPTS "$DTB_SRC"     "$DEPLOY_TARGET:$REMOTE_TMP/$DTB"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$SYSMAP_SRC"  "$DEPLOY_TARGET:$REMOTE_TMP/System.map-$KREL"
 # shellcheck disable=SC2086
@@ -226,18 +221,15 @@ ssh_pi "sudo sh -euc '
   install -m644 \"$REMOTE_TMP/config-$KREL\" \"/boot/config-$KREL\"
   # System.map -> rootfs (debug aid; mode 600 to match stock)
   install -m600 \"$REMOTE_TMP/System.map-$KREL\" \"/boot/System.map-$KREL\"
-  # rebuilt DTB -> rootfs dtbs dir (Ubuntu convention; not boot-critical here)
-  mkdir -p \"/boot/dtbs/$KREL\"
-  install -m644 \"$REMOTE_TMP/$DTB\" \"/boot/dtbs/$KREL/$DTB\"
-  # build the new/ tryboot slot: clone golden current/, overlay our kernel + DTB
+  # build the new/ tryboot slot: clone golden current/ (keeps stock DTB +
+  # overlays), overlay only our kernel
   rm -rf \"\$BOOT/new\"
   cp -r \"\$BOOT/current\" \"\$BOOT/new\"
   install -m644 \"$REMOTE_TMP/vmlinuz\" \"\$BOOT/new/vmlinuz\"
-  install -m644 \"$REMOTE_TMP/$DTB\" \"\$BOOT/new/$DTB\"
   mkinitramfs -o \"\$BOOT/new/initrd.img\" \"$KREL\"
   printf %s \"$KREL\" > \"\$BOOT/new/.deploy-krel\"
   rm -rf \"$REMOTE_TMP\"
-  echo \"new/ slot ready: $KREL  (kernel+DTB; current/ untouched)\"
+  echo \"new/ slot ready: $KREL  (kernel only; stock DTB kept; current/ untouched)\"
 '"
 
 # ---------------------------------------------------------------------------

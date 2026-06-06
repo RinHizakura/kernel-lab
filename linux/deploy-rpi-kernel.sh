@@ -20,17 +20,18 @@ set -euo pipefail
 : "${CROSS_COMPILE:=aarch64-linux-gnu-}"
 : "${JOBS:=$(nproc)}"
 : "${DTB:=bcm2711-rpi-4-b.dtb}"           # Pi 4 device tree
+: "${DEFCONFIG:=bcm2711_defconfig}"       # in-tree defconfig (arch/arm64/configs/)
 : "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi OS boot partition mount
 : "${LOCALVERSION:=-test}"                # version suffix -> KREL, e.g. 7.0.11-test
-: "${KERNEL_NAME:=}"                      # boot image filename; default kernel-<KREL>.img
+: "${KERNEL_NAME:=}"                       # boot image filename; default kernel-<KREL>.img
 : "${SSH_OPTS:=-o ConnectTimeout=10}"
+: "${KSRC:=}"                             # kernel source tree (set to your tree, absolute path)
 
 DO_BUILD=1
 DO_REBOOT=0
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STAGE_DIR="${SRC_DIR}/.deploy-staging"
+# SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,7 +53,7 @@ Flags:
   --target USER@HOST   SSH target (default: \$DEPLOY_TARGET)
   -j N                 Parallel build jobs (default: nproc = $JOBS)
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
-  --defconfig          Force 'make defconfig' before building
+  --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --menuconfig         Run menuconfig after defconfig
   --no-build           Skip the build, deploy existing artifacts
   --reboot             Reboot the Pi after deploying
@@ -80,6 +81,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# ---------------------------------------------------------------------------
+# Resolve kernel source tree (KSRC, default: this script's location)
+# ---------------------------------------------------------------------------
+SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd)
+STAGE_DIR="${SRC_DIR}/.deploy-staging"
+log "Kernel source: $SRC_DIR"
+
 MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
 
 # ---------------------------------------------------------------------------
@@ -95,8 +103,14 @@ command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || \
 # ---------------------------------------------------------------------------
 if [ "$DO_BUILD" = 1 ]; then
   if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$SRC_DIR/.config" ]; }; then
-    log "Generating .config from arm64 defconfig"
-    "${MAKE[@]}" defconfig
+    log "Generating .config from $DEFCONFIG"
+    "${MAKE[@]}" "$DEFCONFIG"
+    # Deployment tweaks on top of the stock defconfig:
+    #   - disable LOCALVERSION_AUTO so KREL stays a stable "X.Y.Z$LOCALVERSION"
+    #     (no git hash / -dirty suffix) -> predictable module path on the Pi.
+    log "Applying config tweaks (disable LOCALVERSION_AUTO)"
+    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --disable LOCALVERSION_AUTO
+    "${MAKE[@]}" olddefconfig
     [ "$MENUCONFIG" = 1 ] && "${MAKE[@]}" menuconfig
   else
     log "Reusing existing .config"
@@ -118,8 +132,10 @@ log "Kernel release: $KREL  ->  $BOOT_DIR/$KERNEL_NAME (+ $INITRD_NAME)"
 
 IMAGE="$SRC_DIR/arch/arm64/boot/Image"
 DTB_SRC="$SRC_DIR/arch/arm64/boot/dts/broadcom/$DTB"
-[ -f "$IMAGE" ]   || die "Missing $IMAGE — run the build first."
-[ -f "$DTB_SRC" ] || die "Missing $DTB_SRC — run the build first."
+CONFIG_SRC="$SRC_DIR/.config"
+[ -f "$IMAGE" ]      || die "Missing $IMAGE — run the build first."
+[ -f "$DTB_SRC" ]    || die "Missing $DTB_SRC — run the build first."
+[ -f "$CONFIG_SRC" ] || die "Missing $CONFIG_SRC — run the build first."
 
 # ---------------------------------------------------------------------------
 # 2. Package modules
@@ -148,11 +164,13 @@ ssh_pi "command -v mkinitramfs >/dev/null 2>&1" \
 REMOTE_TMP="/tmp/kdeploy.$$"
 ssh_pi "mkdir -p '$REMOTE_TMP'"
 
-log "Copying kernel image, DTB and modules"
+log "Copying kernel image, DTB, config and modules"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$IMAGE"       "$DEPLOY_TARGET:$REMOTE_TMP/$KERNEL_NAME"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$DTB_SRC"     "$DEPLOY_TARGET:$REMOTE_TMP/$DTB"
+# shellcheck disable=SC2086
+scp $SSH_OPTS "$CONFIG_SRC"  "$DEPLOY_TARGET:$REMOTE_TMP/config-$KREL"
 # shellcheck disable=SC2086
 scp $SSH_OPTS "$MOD_TARBALL" "$DEPLOY_TARGET:$REMOTE_TMP/modules.tar.gz"
 
@@ -169,6 +187,9 @@ ssh_pi "sudo sh -euc '
   # device tree
   [ -f \"$BOOT_DIR/$DTB\" ] && cp \"$BOOT_DIR/$DTB\" \"$BOOT_DIR/$DTB.bak-\$ts\"
   install -m644 \"$REMOTE_TMP/$DTB\" \"$BOOT_DIR/$DTB\"
+  # kernel config -> /boot/config-<KREL> so mkinitramfs can verify compression support
+  [ -f \"/boot/config-$KREL\" ] && cp \"/boot/config-$KREL\" \"/boot/config-$KREL.bak-\$ts\"
+  install -m644 \"$REMOTE_TMP/config-$KREL\" \"/boot/config-$KREL\"
   # initramfs for this kernel version (Ubuntu boots via initrd)
   mkinitramfs -o \"$BOOT_DIR/$INITRD_NAME\" \"$KREL\"
   # register kernel + initrd in config.txt (idempotent, non-destructive)
@@ -179,7 +200,7 @@ ssh_pi "sudo sh -euc '
     printf \"\n# Added by deploy-rpi.sh\n[all]\narm_64bit=1\nkernel=$KERNEL_NAME\ninitramfs $INITRD_NAME followkernel\n\" >> \"\$cfg\"
   fi
   rm -rf \"$REMOTE_TMP\"
-  echo \"installed kernel=$KERNEL_NAME initrd=$INITRD_NAME modules=$KREL\"
+  echo \"installed kernel=$KERNEL_NAME initrd=$INITRD_NAME config=/boot/config-$KREL modules=$KREL\"
 '"
 
 # ---------------------------------------------------------------------------

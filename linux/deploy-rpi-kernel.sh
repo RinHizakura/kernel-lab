@@ -178,6 +178,24 @@ if [ "$DO_BUILD" = 1 ]; then
     log "Reusing existing .config"
   fi
 
+  # Ensure the netfilter/routing features Tailscale needs, on TOP of whatever
+  # .config we ended up with (fresh defconfig OR reused).
+  log "Ensuring Tailscale/netfilter kernel options (=y)"
+  TS_CONFIGS="
+    NF_TABLES NFT_COMPAT
+    NF_CONNTRACK NF_NAT
+    NETFILTER_XT_MATCH_COMMENT NETFILTER_XT_MATCH_MARK
+    NETFILTER_XT_MATCH_CONNTRACK
+    NETFILTER_XT_MATCH_CONNMARK NETFILTER_XT_TARGET_CONNMARK
+    NETFILTER_XT_TARGET_MASQUERADE
+    IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES
+    WIREGUARD
+  "
+  for opt in $TS_CONFIGS; do
+    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
+  done
+  "${MAKE[@]}" olddefconfig
+
   log "Building Image, modules and DTBs (-j$JOBS)"
   "${MAKE[@]}" Image modules dtbs
 

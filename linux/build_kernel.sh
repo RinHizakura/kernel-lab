@@ -5,9 +5,9 @@
 # Layout (relative to this script, override with BUILD_DIR):
 #   build/linux/          shallow git checkout of the requested kernel branch
 #
-# Starts from BASE_CONFIG (defconfig by default), optionally merges each file in
-# CONFIG_FRAGMENTS on top via the kernel's own merge_config.sh, then reconciles
-# with `make olddefconfig` so nothing silently drops out.
+# Starts from defconfig, optionally merges each file in CONFIG_FRAGMENTS on top
+# via the kernel's own merge_config.sh, then reconciles with `make olddefconfig`
+# so nothing silently drops out.
 #
 # Usage:
 #   ./build_kernel.sh                                   # stable tree, master
@@ -16,7 +16,6 @@
 #   ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ./build_kernel.sh
 #   CONFIG_FRAGMENTS="/path/a.config /path/b.config" ./build_kernel.sh
 #   BUILD_DIR=/somewhere/else ./build_kernel.sh
-#   JOBS=8 ./build_kernel.sh
 #
 set -euo pipefail
 
@@ -27,10 +26,8 @@ KERNEL="$BUILD_DIR/linux"
 KERNEL_REPO="${KERNEL_REPO:-https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git}"
 KERNEL_BRANCH="${KERNEL_BRANCH:-master}"
 ARCH="${ARCH:-x86_64}"
-BASE_CONFIG="${BASE_CONFIG:-defconfig}"
-# Space-separated list of .config fragments to merge on top of BASE_CONFIG.
+# Space-separated list of .config fragments to merge on top of defconfig.
 CONFIG_FRAGMENTS="${CONFIG_FRAGMENTS:-}"
-JOBS="${JOBS:-$(nproc)}"
 
 msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -53,7 +50,7 @@ case "$ARCH" in
     *)      IMG_TARGET=vmlinux ;;
 esac
 
-MAKE=(make -C "$KERNEL" ARCH="$ARCH" -j"$JOBS")
+MAKE=(make -C "$KERNEL" ARCH="$ARCH" -j"$(nproc)")
 [[ -n "${CROSS_COMPILE:-}" ]] && MAKE+=(CROSS_COMPILE="$CROSS_COMPILE")
 
 sync_repo() {
@@ -79,8 +76,8 @@ main() {
 
     sync_repo
 
-    msg "Generating base config ($BASE_CONFIG)"
-    "${MAKE[@]}" "$BASE_CONFIG"
+    msg "Generating base config (defconfig)"
+    "${MAKE[@]}" defconfig
 
     if (( ${#FRAGMENTS[@]} )); then
         msg "Merging config fragments"

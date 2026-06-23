@@ -1,0 +1,101 @@
+firmware: raspberrypi: support "tryboot" reboot flag (mainline port)
+
+Mainline's bcm2835 firmware driver only sends NOTIFY_REBOOT from the device
+.shutdown hook, which never sees the reboot command string. So `reboot "0
+tryboot"` is a no-op on mainline: the VideoCore firmware never gets the
+one-shot tryboot flag, always boots the normal config.txt slot, and the
+firmware A/B tryboot safety net does not work for kernel deploys.
+
+Port the downstream Raspberry Pi mechanism: a reboot notifier (which does
+receive the command string) that parses " tryboot" and sets the one-shot
+RPI_FIRMWARE_SET_REBOOT_FLAGS=0x1 flag via the mailbox before reset. The
+firmware then loads tryboot.txt instead of config.txt exactly once.
+
+NOTE: the *running* kernel sets the flag, so the first kernel built with
+this patch must be installed into the active slot directly (not via
+tryboot). Every deploy after that can use `reboot "0 tryboot"`.
+
+Apply from the kernel source tree:
+    git apply 0001-firmware-rpi-tryboot-reboot.patch
+  (or: patch -p1 < 0001-firmware-rpi-tryboot-reboot.patch)
+
+diff --git a/include/soc/bcm2835/raspberrypi-firmware.h b/include/soc/bcm2835/raspberrypi-firmware.h
+--- a/include/soc/bcm2835/raspberrypi-firmware.h
++++ b/include/soc/bcm2835/raspberrypi-firmware.h
+@@ -76,6 +76,7 @@
+ 	RPI_FIRMWARE_GET_CLOCK_MEASURED =                     0x00030047,
+ 	RPI_FIRMWARE_NOTIFY_REBOOT =                          0x00030048,
+ 	RPI_FIRMWARE_SET_CLOCK_STATE =                        0x00038001,
++	RPI_FIRMWARE_SET_REBOOT_FLAGS =                       0x00038064,
+ 	RPI_FIRMWARE_SET_CLOCK_RATE =                         0x00038002,
+ 	RPI_FIRMWARE_SET_VOLTAGE =                            0x00038003,
+ 	RPI_FIRMWARE_SET_TURBO =                              0x00038009,
+diff --git a/drivers/firmware/raspberrypi.c b/drivers/firmware/raspberrypi.c
+--- a/drivers/firmware/raspberrypi.c
++++ b/drivers/firmware/raspberrypi.c
+@@ -14,6 +14,7 @@
+ #include <linux/of.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
++#include <linux/reboot.h>
+ #include <linux/slab.h>
+ #include <soc/bcm2835/raspberrypi-firmware.h>
+ 
+@@ -32,6 +33,8 @@
+ 	u32 enabled;
+ 
+ 	struct kref consumers;
++
++	struct notifier_block reboot_nb;
+ };
+ 
+ static DEFINE_MUTEX(transaction_lock);
+@@ -273,6 +276,28 @@
+ 	rpi_firmware_put(fw);
+ }
+ 
++static int rpi_firmware_reboot_notify(struct notifier_block *nb,
++				      unsigned long action, void *data)
++{
++	struct rpi_firmware *fw =
++		container_of(nb, struct rpi_firmware, reboot_nb);
++	u32 reboot_flags = 0;
++
++	/*
++	 * "tryboot": one-shot flag, cleared by the firmware on the next boot,
++	 * which makes the bootloader load tryboot.txt instead of config.txt.
++	 * Enables brick-safe A/B kernel deploys via: reboot "0 tryboot".
++	 */
++	if (data && strstr(data, " tryboot"))
++		reboot_flags |= 0x1;
++
++	if (reboot_flags)
++		rpi_firmware_property(fw, RPI_FIRMWARE_SET_REBOOT_FLAGS,
++				      &reboot_flags, sizeof(reboot_flags));
++
++	return NOTIFY_DONE;
++}
++
+ static int rpi_firmware_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -306,6 +331,10 @@
+ 	rpi_register_hwmon_driver(dev, fw);
+ 	rpi_register_clk_driver(dev);
+ 
++	fw->reboot_nb.notifier_call = rpi_firmware_reboot_notify;
++	if (register_reboot_notifier(&fw->reboot_nb))
++		dev_err(dev, "failed to register reboot notifier\n");
++
+ 	return 0;
+ }
+ 
+@@ -323,6 +352,8 @@
+ {
+ 	struct rpi_firmware *fw = platform_get_drvdata(pdev);
+ 
++	unregister_reboot_notifier(&fw->reboot_nb);
++
+ 	platform_device_unregister(rpi_hwmon);
+ 	rpi_hwmon = NULL;
+ 	platform_device_unregister(rpi_clk);

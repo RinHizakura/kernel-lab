@@ -28,7 +28,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration (override via flags or environment)
 # ---------------------------------------------------------------------------
-: "${DEPLOY_TARGET:=pi@CHANGE-ME}"        # ssh target, e.g. pi@192.168.1.50
+: "${DEPLOY_TARGET:=pi@CHANGE-ME}"  # ssh target, e.g. pi@192.168.1.50
 : "${ARCH:=arm64}"
 : "${CROSS_COMPILE:=aarch64-linux-gnu-}"
 : "${JOBS:=$(nproc)}"
@@ -36,7 +36,7 @@ set -euo pipefail
 : "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi boot partition mount
 : "${LOCALVERSION:=-test}"                # version suffix -> KREL, e.g. 7.0.11-test
 : "${SSH_OPTS:=-o ConnectTimeout=10}"
-: "${KSRC:=}"                             # kernel source tree (set to your tree, absolute path)
+: "${KSRC:=}"  # kernel source tree (absolute path)
 
 DO_BUILD=1
 DO_PROMOTE=0
@@ -158,6 +158,23 @@ MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSIO
 # 1. Build
 # ---------------------------------------------------------------------------
 if [ "$DO_BUILD" = 1 ]; then
+  # Force-apply the tryboot patch before building (idempotent). Without it,
+  # `reboot "0 tryboot"` is a no-op on mainline and the A/B deploy silently
+  # never boots new/. Skip if already applied; die if it no longer applies
+  # (after a rebase) rather than building a half-patched kernel.
+  KERNEL_PATCH="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/0001-firmware-rpi-tryboot-reboot.patch"
+  if [ -f "$KERNEL_PATCH" ]; then
+    if git -C "$SRC_DIR" apply --reverse --check "$KERNEL_PATCH" 2>/dev/null; then
+      log "tryboot patch already applied"
+    elif git -C "$SRC_DIR" apply "$KERNEL_PATCH" 2>/dev/null; then
+      log "Applied tryboot patch"
+    else
+      die "tryboot patch does not apply (and is not already applied): $KERNEL_PATCH"
+    fi
+  else
+    die "tryboot patch not found: $KERNEL_PATCH"
+  fi
+
   if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$SRC_DIR/.config" ]; }; then
     log "Generating .config from $DEFCONFIG"
     "${MAKE[@]}" "$DEFCONFIG"

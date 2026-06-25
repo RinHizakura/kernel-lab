@@ -24,7 +24,7 @@ BUILD_DIR="$SCRIPT_DIR/build"
 SRC_DIR="$BUILD_DIR/syzkaller"
 KERNEL="$BUILD_DIR/linux"
 IMG_DIR="$BUILD_DIR/image"
-FRAGMENT="$SCRIPT_DIR/kernel-syzkaller.config"
+FRAGMENT="$SCRIPT_DIR/config/kernel-syzkaller.config"
 BUILDER="$SCRIPT_DIR/../linux/build_kernel.sh"
 
 RELEASE="${RELEASE:-bullseye}"

@@ -6,9 +6,10 @@
 #
 # Stages (all reuse existing scripts):
 #   build_syzkaller.sh    install Go + clone/build syzkaller for arm64
-#   kernel (deploy)       ../linux/deploy-rpi-kernel.sh, with the syzkaller
-#                         KCOV/KASAN fragment merged in, cross-built and pushed
-#                         to the Pi's brick-safe tryboot slot
+#   kernel (deploy)       ../linux/deploy-rpi-kernel.sh, with the lean syzkaller
+#                         KCOV fragment merged in, cross-built and pushed to the
+#                         Pi's brick-safe tryboot slot. Set FRAGMENT=... to use
+#                         the full config/kernel-syzkaller.config (adds KASAN etc.).
 #   config                write the syz-manager (isolated) config.cfg
 #
 # Required env:
@@ -37,7 +38,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 SRC_DIR="$BUILD_DIR/syzkaller"
-FRAGMENT="$SCRIPT_DIR/kernel-syzkaller.config"
+FRAGMENT="${FRAGMENT:-$SCRIPT_DIR/config/kernel-syzkaller-min.config}"
 RPI_DEPLOY="$SCRIPT_DIR/../linux/deploy-rpi-kernel.sh"
 
 DEPLOY_TARGET="${DEPLOY_TARGET:-}"
@@ -69,7 +70,7 @@ stage_build() {
     BUILD_DIR="$BUILD_DIR" TARGETARCH=arm64 "$SCRIPT_DIR/common/build_syzkaller.sh"
 }
 
-# --- kernel: cross-build with KCOV/KASAN merged, deploy to the Pi -----------
+# --- kernel: cross-build with the KCOV fragment merged, deploy to the Pi ----
 # Delegates entirely to the brick-safe tryboot deploy; we only add the fragment.
 stage_kernel() {
     CONFIG_FRAGMENTS="$FRAGMENT" KSRC="$KSRC" ARCH=arm64 \

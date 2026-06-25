@@ -34,7 +34,8 @@ set -euo pipefail
 : "${JOBS:=$(nproc)}"
 : "${DEFCONFIG:=bcm2711_defconfig}"       # in-tree defconfig (arch/arm64/configs/)
 : "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi boot partition mount
-: "${LOCALVERSION:=-test}"                # version suffix -> KREL, e.g. 7.0.11-test
+LOCALVERSION_USER="${LOCALVERSION+set}"
+: "${LOCALVERSION:=}"
 : "${SSH_OPTS:=-o ConnectTimeout=10}"
 : "${KSRC:=}"  # kernel source tree (absolute path)
 : "${CONFIG_FRAGMENTS:=}"  # space-separated .config fragments merged on top (e.g. syzkaller KCOV/KASAN)
@@ -99,7 +100,7 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)       DEPLOY_TARGET="$2"; shift 2;;
-    --localversion) LOCALVERSION="$2"; shift 2;;
+    --localversion) LOCALVERSION="$2"; LOCALVERSION_USER=set; shift 2;;
     --defconfig)    DO_DEFCONFIG=force; shift;;
     --menuconfig)   DO_DEFCONFIG=force; MENUCONFIG=1; shift;;
     --no-build)     DO_BUILD=0; shift;;
@@ -154,6 +155,17 @@ command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || \
   die "Cross compiler ${CROSS_COMPILE}gcc not found in PATH"
 
 MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
+
+finalize_localversion() {
+  if [ -n "$LOCALVERSION_USER" ]; then return; fi
+  [ -f "$SRC_DIR/.config" ] || die "no .config yet — cannot derive version hash"
+  local head tok
+  head="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo nogit)"
+  tok="$( { printf '%s\n' "$head"; cat "$SRC_DIR/.config"; } | sha1sum | cut -c1-8 )"
+  LOCALVERSION="-g${tok}"
+  MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
+  log "Auto version suffix: $LOCALVERSION (hash of source HEAD + .config)"
+}
 
 # ---------------------------------------------------------------------------
 # 1. Build
@@ -213,6 +225,21 @@ if [ "$DO_BUILD" = 1 ]; then
     "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
   done
 
+  # Firmware in /lib/firmware/brcm on the Pi is untouched by the kernel build.
+  # The distro ships brcmfmac firmware ZSTD-compressed (.zst); without the
+  # compressed-firmware loader the kernel only looks for the uncompressed names,
+  # gets -ENOENT, and wlan0 never appears. FW_LOADER_COMPRESS_ZSTD lets it
+  # decompress them in place.
+  log "Ensuring Pi onboard wifi (brcmfmac) + ZSTD firmware loader are built"
+  WIFI_CONFIGS="
+    CFG80211 MAC80211
+    BRCMUTIL BRCMFMAC
+    FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD
+  "
+  for opt in $WIFI_CONFIGS; do
+    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
+  done
+
   # Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever
   # .config we have, using the kernel's own merge tool so dependencies resolve.
   if [ -n "$CONFIG_FRAGMENTS" ]; then
@@ -228,12 +255,16 @@ if [ "$DO_BUILD" = 1 ]; then
 
   "${MAKE[@]}" olddefconfig
 
+  finalize_localversion
+
   log "Building Image, modules and DTBs (-j$JOBS)"
   "${MAKE[@]}" Image modules dtbs
 
   log "Installing modules into staging dir"
   rm -rf "$STAGE_DIR"
   "${MAKE[@]}" INSTALL_MOD_PATH="$STAGE_DIR" modules_install
+else
+  finalize_localversion
 fi
 
 KREL="$("${MAKE[@]}" -s kernelrelease 2>/dev/null)"

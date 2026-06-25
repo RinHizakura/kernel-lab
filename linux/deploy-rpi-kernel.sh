@@ -37,6 +37,7 @@ set -euo pipefail
 : "${LOCALVERSION:=-test}"                # version suffix -> KREL, e.g. 7.0.11-test
 : "${SSH_OPTS:=-o ConnectTimeout=10}"
 : "${KSRC:=}"  # kernel source tree (absolute path)
+: "${CONFIG_FRAGMENTS:=}"  # space-separated .config fragments merged on top (e.g. syzkaller KCOV/KASAN)
 
 DO_BUILD=1
 DO_PROMOTE=0
@@ -211,6 +212,20 @@ if [ "$DO_BUILD" = 1 ]; then
   for opt in $TS_CONFIGS; do
     "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
   done
+
+  # Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever
+  # .config we have, using the kernel's own merge tool so dependencies resolve.
+  if [ -n "$CONFIG_FRAGMENTS" ]; then
+    for frag in $CONFIG_FRAGMENTS; do
+      [ -f "$frag" ] || die "config fragment not found: $frag"
+    done
+    log "Merging extra config fragments: $CONFIG_FRAGMENTS"
+    # shellcheck disable=SC2086
+    ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
+      "$SRC_DIR/scripts/kconfig/merge_config.sh" -m -O "$SRC_DIR" \
+      "$SRC_DIR/.config" $CONFIG_FRAGMENTS
+  fi
+
   "${MAKE[@]}" olddefconfig
 
   log "Building Image, modules and DTBs (-j$JOBS)"

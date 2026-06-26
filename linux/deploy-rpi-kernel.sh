@@ -59,18 +59,16 @@ ssh_pi() {
 }
 
 # require_space DF_PATH OVERWRITE_PATH NEEDED_KB LABEL
-# Fail unless the Pi filesystem holding DF_PATH can fit NEEDED_KB, crediting space
-# currently held by OVERWRITE_PATH (it gets replaced, so that space comes back).
+# Fail unless the Pi filesystem holding DF_PATH can fit NEEDED_KB. Space already
+# used by OVERWRITE_PATH is credited back — it's replaced, not added, on deploy.
 require_space() {
   local df_path="$1" owr_path="$2" need="$3" label="$4" avail used budget
   avail=$(ssh_pi "df -Pk '$df_path' | awk 'NR==2{print \$4}'") \
     || die "could not check free space on the Pi ($df_path)"
-  used=$(ssh_pi "du -sk '$owr_path' 2>/dev/null | cut -f1" || true); used=${used:-0}
-  budget=$((avail + used))
-  if [ "$need" -gt "$budget" ]; then
-    die "Not enough space on the Pi for $label: need ${need}KB but only ${budget}KB available at $df_path (free ${avail}KB + reclaimable ${used}KB). Free up space and retry."
-  fi
-  log "  space OK ($label): ${need}KB needed, ${budget}KB available at $df_path"
+  used=$(ssh_pi "du -sk '$owr_path' 2>/dev/null | cut -f1" || true)
+  budget=$(( avail + ${used:-0} ))
+  (( need <= budget )) || die "Not enough space on the Pi for $label: need ${need}KB, have ${budget}KB at $df_path (free ${avail} + reclaimable ${used:-0}). Free up space and retry."
+  log "  space OK ($label): need ${need}KB <= ${budget}KB at $df_path"
 }
 
 # stage_copy SRC NAME [DEPLOYED]
@@ -355,17 +353,17 @@ printf '%s' "$NEW_CMDLINE" > "$DTB_WORK/cmdline.txt"
 log "  -> $NEW_CMDLINE"
 
 # Bail out before sending anything if the Pi can't hold the payload.
-#   rootfs (ext4): modules + System.map + config land here, and vmlinuz transits
-#     REMOTE_TMP (/tmp) on the way to the FAT slot — so the rootfs total sums all of them.
-#   boot (FAT32): the new/ tryboot slot is a clone of current/ (vfat — no symlink/
-#     hardlink sharing) plus the new vmlinuz that replaces the stock one.
-# Both checked against actual free space; fail fast if tight.
+#   rootfs (ext4): modules + System.map + config install here; vmlinuz also transits
+#     REMOTE_TMP (/tmp) en route to the FAT slot — so sum all four.
+#   boot (FAT32): the new/ slot is a full clone of current/ (vfat can't share via
+#     symlink/hardlink) plus the new vmlinuz that replaces the stock one.
 log "Checking free space on the Pi"
 ROOTFS_KB=$(du -skc "$STAGE_DIR/lib/modules/$KREL" "$IMAGE" "$SYSMAP_SRC" "$CONFIG_SRC" | tail -1 | cut -f1)
 require_space "/lib/modules" "/lib/modules/$KREL" "$ROOTFS_KB" "modules + System.map + vmlinuz"
+
+CURRENT_KB=$(ssh_pi "du -sk '$BOOT_DIR/current' | cut -f1")
 VMLINUZ_KB=$(du -sk "$IMAGE" | cut -f1)
-BOOT_KB=$(( $(ssh_pi "du -sk '$BOOT_DIR/current' | cut -f1") + VMLINUZ_KB ))
-require_space "$BOOT_DIR" "$BOOT_DIR/new" "$BOOT_KB" "boot new/ slot"
+require_space "$BOOT_DIR" "$BOOT_DIR/new" "$(( CURRENT_KB + VMLINUZ_KB ))" "boot new/ slot"
 
 log "Copying artifacts to the Pi (md5-skip unchanged)"
 stage_copy "$IMAGE"      vmlinuz            "$BOOT_DIR/new/vmlinuz"

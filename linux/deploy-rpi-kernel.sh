@@ -301,15 +301,8 @@ cp "$DTB_SRC" "$DTB_OUT"
 printf '/dts-v1/;\n/plugin/;\n/ { };\n' | "$DTC_BIN" -@ -I dts -O dtb -o "$NOOP_DTBO" 2>/dev/null \
   || die "dtc: failed to build no-op overlay"
 
-# ---------------------------------------------------------------------------
-# 2. Package modules
-# ---------------------------------------------------------------------------
-MOD_TARBALL="$SRC_DIR/.deploy-modules-${KREL}.tar.gz"
-if [ "$DO_BUILD" = 1 ] || [ ! -f "$MOD_TARBALL" ]; then
-  [ -d "$STAGE_DIR/lib/modules/$KREL" ] || die "No staged modules at $STAGE_DIR/lib/modules/$KREL"
-  log "Packaging modules -> $(basename "$MOD_TARBALL")"
-  tar -C "$STAGE_DIR" -czf "$MOD_TARBALL" "lib/modules/$KREL"
-fi
+# Sanity-check the staging dir exists here.
+[ -d "$STAGE_DIR/lib/modules/$KREL" ] || die "No staged modules at $STAGE_DIR/lib/modules/$KREL"
 
 # ---------------------------------------------------------------------------
 # 3. Deploy into the new/ tryboot slot (current/ stays untouched)
@@ -324,6 +317,10 @@ ssh_pi "test -d '$BOOT_DIR/current' && grep -q 'tryboot_a_b=1' '$BOOT_DIR/autobo
 log "Verifying initramfs tooling on the Pi"
 ssh_pi "command -v mkinitramfs >/dev/null 2>&1" \
   || die "mkinitramfs missing on the Pi — run: sudo apt install initramfs-tools"
+
+command -v rsync >/dev/null 2>&1 || die "rsync not found locally"
+ssh_pi "command -v rsync >/dev/null 2>&1" \
+  || die "rsync missing on the Pi — run: sudo apt install rsync"
 
 REMOTE_TMP="/tmp/kdeploy.$$"
 ssh_pi "mkdir -p '$REMOTE_TMP'"
@@ -350,31 +347,21 @@ stage_copy "$DTB_OUT"    "$DTB_NAME"        "$BOOT_DIR/new/$DTB_NAME"      # ups
 stage_copy "$NOOP_DTBO"  noop.dtbo
 stage_copy "$DTB_WORK/cmdline.txt" cmdline.txt
 
-# modules tarball (~90 MB): skip upload AND reinstall if the installed set already
-# matches — compare against an md5 sidecar left in /lib/modules/$KREL by the last
-# deploy. (Stable across --no-build reruns; a fresh build regenerates the tarball.)
-MOD_MD5=$(md5sum "$MOD_TARBALL" | cut -d' ' -f1)
-MOD_REMOTE_MD5=$(ssh_pi "cat '/lib/modules/$KREL/.deploy-md5' 2>/dev/null" || true)
-if [ "$MOD_MD5" = "$MOD_REMOTE_MD5" ]; then
-  MODULES_FRESH=1
-  log "  unchanged: modules ($KREL already installed)"
-else
-  MODULES_FRESH=0
-  stage_copy "$MOD_TARBALL" modules.tar.gz
-fi
+# rsync delta straight into /lib/modules on the Pi
+# --rsync-path runs the remote side as root so it can write under /lib.
+log "Syncing modules -> /lib/modules/$KREL (rsync delta)"
+# shellcheck disable=SC2086
+rsync -a --delete -e "ssh $SSH_OPTS" --rsync-path="sudo rsync" \
+  "$STAGE_DIR/lib/modules/$KREL/" "$DEPLOY_TARGET:/lib/modules/$KREL/"
 
 log "Staging new/ slot on the Pi (current/ untouched)"
 ssh_pi "sudo sh -euc '
   set -eu
   BOOT=\"$BOOT_DIR\"
   [ -d \"\$BOOT/current\" ] || { echo \"no \$BOOT/current slot\"; exit 1; }
-  # modules first — the initramfs is built from them (skip if unchanged)
-  if [ \"$MODULES_FRESH\" = 0 ]; then
-    rm -rf \"/lib/modules/$KREL\"
-    tar -C / -xzf \"$REMOTE_TMP/modules.tar.gz\"
-    depmod \"$KREL\"
-    printf %s \"$MOD_MD5\" > \"/lib/modules/$KREL/.deploy-md5\"
-  fi
+  # modules were rsync'd into /lib/modules/$KREL already; refresh dep metadata
+  # before the initramfs is built from them.
+  depmod \"$KREL\"
   # kernel config -> /boot/config-<KREL> so mkinitramfs can verify compression
   install -m644 \"$REMOTE_TMP/config-$KREL\" \"/boot/config-$KREL\"
   # System.map -> rootfs (debug aid; mode 600 to match stock)

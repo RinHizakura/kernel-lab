@@ -377,7 +377,7 @@ stage_copy "$DTB_WORK/cmdline.txt" cmdline.txt
 # --rsync-path runs the remote side as root so it can write under /lib.
 log "Syncing modules -> /lib/modules/$KREL (rsync delta)"
 # shellcheck disable=SC2086
-rsync -a --delete -e "ssh $SSH_OPTS" --rsync-path="sudo rsync" \
+rsync -a --delete --info=progress2 -e "ssh $SSH_OPTS" --rsync-path="sudo rsync" \
   "$STAGE_DIR/lib/modules/$KREL/" "$DEPLOY_TARGET:/lib/modules/$KREL/"
 
 log "Staging new/ slot on the Pi (current/ untouched)"
@@ -385,7 +385,7 @@ ssh_pi "sudo sh -euc '
   set -eu
   BOOT=\"$BOOT_DIR\"
   [ -d \"\$BOOT/current\" ] || { echo \"no \$BOOT/current slot\"; exit 1; }
-  # modules were rsync'd into /lib/modules/$KREL already; refresh dep metadata
+  # modules were synced into /lib/modules/$KREL already; refresh dep metadata
   # before the initramfs is built from them.
   depmod \"$KREL\"
   # kernel config -> /boot/config-<KREL> so mkinitramfs can verify compression

@@ -19,10 +19,10 @@
 #
 # Optional env:
 #   SSHKEY=~/.ssh/id_ecdsa    private key syz-manager uses to reach the Pi
-#   SSH_USER=<from target>    SSH user syzkaller logs in as. NOTE: coverage needs
-#                             read access to /sys/kernel/debug/kcov, which usually
-#                             means root. Set SSH_USER=root (with key auth enabled)
-#                             if the default user can't read kcov.
+#   SSH_USER=root             SSH user syzkaller logs in as (default root). The
+#                             executor needs CAP_SYS_ADMIN to mount tmpfs and root
+#                             to read /sys/kernel/debug/kcov for coverage, so root
+#                             with key auth is required for normal fuzzing.
 #   TARGET_DIR=/tmp/syzkaller writable scratch dir on the Pi
 #   HTTP WORKDIR CONFIG PROCS REBOOT
 #
@@ -63,7 +63,9 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 [[ -f "$FRAGMENT" ]]      || die "syzkaller config fragment missing: $FRAGMENT"
 
 HOST="${DEPLOY_TARGET#*@}"
-SSH_USER="${SSH_USER:-${DEPLOY_TARGET%@*}}"
+# Default to root: the isolated-VM executor needs CAP_SYS_ADMIN (mount tmpfs) and
+# coverage needs root. Override with SSH_USER=<user> for an unprivileged target.
+SSH_USER="${SSH_USER:-root}"
 
 # --- build syzkaller for arm64 (shared with the QEMU path) ------------------
 stage_build() {

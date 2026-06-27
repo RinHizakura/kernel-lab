@@ -31,6 +31,8 @@ set -euo pipefail
 : "${DEPLOY_TARGET:=pi@CHANGE-ME}"  # ssh target, e.g. pi@192.168.1.50
 : "${ARCH:=arm64}"
 : "${CROSS_COMPILE:=aarch64-linux-gnu-}"
+: "${LLVM:=}"                             # set LLVM=1 to build with clang/lld
+                                          # (required for arm64 KCOV with gcc < 12)
 : "${JOBS:=$(nproc)}"
 : "${DEFCONFIG:=bcm2711_defconfig}"       # in-tree defconfig (arch/arm64/configs/)
 : "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi boot partition mount
@@ -164,10 +166,16 @@ SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd) \
 STAGE_DIR="${SRC_DIR}/.deploy-staging"
 log "Kernel source: $SRC_DIR"
 
-command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || \
-  die "Cross compiler ${CROSS_COMPILE}gcc not found in PATH"
+if [ -n "$LLVM" ]; then
+  # LLVM=1 -> clang; LLVM=-15 -> clang-15 (kernel's versioned-suffix convention)
+  case "$LLVM" in -*) CLANG_BIN="clang$LLVM";; *) CLANG_BIN="clang";; esac
+  command -v "$CLANG_BIN" >/dev/null 2>&1 || die "LLVM=$LLVM set but $CLANG_BIN not found in PATH"
+else
+  command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || \
+    die "Cross compiler ${CROSS_COMPILE}gcc not found in PATH"
+fi
 
-MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
+MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} LOCALVERSION="$LOCALVERSION" -j"$JOBS")
 
 finalize_localversion() {
   if [ -n "$LOCALVERSION_USER" ]; then return; fi
@@ -176,7 +184,7 @@ finalize_localversion() {
   head="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo nogit)"
   tok="$( { printf '%s\n' "$head"; cat "$SRC_DIR/.config"; } | sha1sum | cut -c1-8 )"
   LOCALVERSION="-g${tok}"
-  MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" LOCALVERSION="$LOCALVERSION" -j"$JOBS")
+  MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} LOCALVERSION="$LOCALVERSION" -j"$JOBS")
   log "Auto version suffix: $LOCALVERSION (hash of source HEAD + .config)"
 }
 
@@ -261,7 +269,7 @@ if [ "$DO_BUILD" = 1 ]; then
     done
     log "Merging extra config fragments: $CONFIG_FRAGMENTS"
     # shellcheck disable=SC2086
-    ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
+    env ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} \
       "$SRC_DIR/scripts/kconfig/merge_config.sh" -m -O "$SRC_DIR" \
       "$SRC_DIR/.config" $CONFIG_FRAGMENTS
   fi

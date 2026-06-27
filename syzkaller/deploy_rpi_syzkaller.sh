@@ -75,8 +75,12 @@ stage_build() {
 # --- kernel: cross-build with the KCOV fragment merged, deploy to the Pi ----
 # Delegates entirely to the brick-safe tryboot deploy; we only add the fragment.
 stage_kernel() {
+    # Build with clang: arm64 KCOV needs clang or gcc >= 12 (gcc 11 silently drops
+    # CONFIG_KCOV), and the kernel needs clang >= 15. Default LLVM=1 (unversioned
+    # clang); override e.g. LLVM=-20 for the versioned clang-20 toolchain, or LLVM=
+    # to fall back to CROSS_COMPILE gcc.
     CONFIG_FRAGMENTS="$FRAGMENT" KSRC="$KSRC" ARCH=arm64 \
-        CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}" \
+        LLVM="${LLVM-1}" CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}" \
         "$RPI_DEPLOY" --target "$DEPLOY_TARGET"
 }
 

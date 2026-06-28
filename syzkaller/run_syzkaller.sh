@@ -31,6 +31,15 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # Make the locally built QEMU discoverable even if config.cfg relies on PATH.
 [[ -d "$QEMU_BIN_DIR" ]] && export PATH="$QEMU_BIN_DIR:$PATH"
 
+# Preflight: for isolated targets, syz-manager just retries silently when SSH
+# fails (e.g. Tailscale SSH wanting a browser re-auth). Fail loudly instead.
+if command -v jq >/dev/null && [[ "$(jq -r '.type' "$CONFIG")" == "isolated" ]]; then
+    read -r host user key < <(jq -r '[.vm.targets[0], .ssh_user, .sshkey] | @tsv' "$CONFIG")
+    ssh -i "$key" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 \
+        "$user@$host" true 2>/dev/null \
+        || die "SSH to $user@$host failed; fix connectivity before fuzzing (Tailscale SSH may need ACL 'accept' instead of 'check')"
+fi
+
 # Drop the leading `--` separator if present so callers can pass extra flags.
 [[ "${1:-}" == "--" ]] && shift
 

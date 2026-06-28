@@ -39,10 +39,8 @@ LOCALVERSION_USER="${LOCALVERSION+set}"
 : "${KSRC:=}"  # kernel source tree (absolute path)
 : "${CONFIG_FRAGMENTS:=}"  # space-separated .config fragments merged on top (e.g. syzkaller KCOV/KASAN)
 
-DO_BUILD=1
 DO_PROMOTE=0
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
-MENUCONFIG=0
 
 # SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
 
@@ -99,8 +97,6 @@ Flags:
   --target USER@HOST   SSH target (default: \$DEPLOY_TARGET)
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
-  --menuconfig         Run menuconfig after defconfig
-  --no-build           Skip the build, (re)stage existing artifacts into new/
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
   -h, --help           This help
 EOF
@@ -114,8 +110,6 @@ while [ $# -gt 0 ]; do
     --target)       DEPLOY_TARGET="$2"; shift 2;;
     --localversion) LOCALVERSION="$2"; LOCALVERSION_USER=set; shift 2;;
     --defconfig)    DO_DEFCONFIG=force; shift;;
-    --menuconfig)   DO_DEFCONFIG=force; MENUCONFIG=1; shift;;
-    --no-build)     DO_BUILD=0; shift;;
     --promote)      DO_PROMOTE=1; shift;;
     -h|--help)      usage; exit 0;;
     *)              die "Unknown argument: $1 (try --help)";;
@@ -195,7 +189,6 @@ finalize_localversion() {
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
-if [ "$DO_BUILD" = 1 ]; then
   # Force-apply the tryboot patch before building (idempotent). Without it,
   # `reboot "0 tryboot"` is a no-op on mainline and the A/B deploy silently
   # never boots new/. Skip if already applied; die if it no longer applies
@@ -228,7 +221,6 @@ if [ "$DO_BUILD" = 1 ]; then
     "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --disable LOCALVERSION_AUTO
     "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable SQUASHFS_XZ
     "${MAKE[@]}" olddefconfig
-    [ "$MENUCONFIG" = 1 ] && "${MAKE[@]}" menuconfig
   else
     log "Reusing existing .config"
   fi
@@ -288,9 +280,6 @@ if [ "$DO_BUILD" = 1 ]; then
   log "Installing modules into staging dir"
   rm -rf "$STAGE_DIR"
   "${MAKE[@]}" INSTALL_MOD_PATH="$STAGE_DIR" modules_install
-else
-  finalize_localversion
-fi
 
 KREL="$("${MAKE[@]}" -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"

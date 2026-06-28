@@ -162,6 +162,7 @@ SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd) \
 [ -f "$SRC_DIR/Makefile" ] && [ -d "$SRC_DIR/arch/$ARCH" ] \
   || die "KSRC does not look like a kernel tree: $SRC_DIR"
 STAGE_DIR="${SRC_DIR}/.deploy-staging"
+KSELF_STAGE="${SRC_DIR}/.deploy-kselftest"  # `make ... install` output: binaries + run_kselftest.sh, no .c
 log "Kernel source: $SRC_DIR"
 
 if [ -n "$LLVM" ]; then
@@ -281,6 +282,21 @@ finalize_localversion() {
   rm -rf "$STAGE_DIR"
   "${MAKE[@]}" INSTALL_MOD_PATH="$STAGE_DIR" modules_install
 
+  # kselftests: `install` stages only the runnable artifacts (compiled binaries,
+  # scripts, run_kselftest.sh) into KSELF_STAGE — no .c sources. Cross-compiling
+  # the full suite is best-effort: a target that won't build for arm64 must not
+  # abort the kernel deploy.
+  log "Building kselftests (cross-compile is best-effort)"
+  rm -rf "$KSELF_STAGE"
+  "${MAKE[@]}" headers
+  if make -C "$SRC_DIR/tools/testing/selftests" \
+       ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} -j"$JOBS" \
+       install INSTALL_PATH="$KSELF_STAGE"; then
+    log "kselftests staged -> $KSELF_STAGE"
+  else
+    warn "kselftest build had failures — deploying whatever installed"
+  fi
+
 KREL="$("${MAKE[@]}" -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"
 log "Kernel release: $KREL  ->  $BOOT_DIR/new/ (tryboot slot; current/ untouched)"
@@ -381,6 +397,14 @@ log "Syncing modules -> /lib/modules/$KREL (rsync delta)"
 rsync -a --delete --info=progress2 -e "ssh $SSH_OPTS" --rsync-path="sudo rsync" \
   "$STAGE_DIR/lib/modules/$KREL/" "$DEPLOY_TARGET:/lib/modules/$KREL/"
 
+# kselftests -> Pi:~/kselftest (run with: cd kselftest && sudo ./run_kselftest.sh)
+if [ -d "$KSELF_STAGE" ]; then
+  log "Syncing kselftests -> $DEPLOY_TARGET:~/kselftest (rsync delta)"
+  # shellcheck disable=SC2086
+  rsync -a --delete --info=progress2 -e "ssh $SSH_OPTS" \
+    "$KSELF_STAGE/" "$DEPLOY_TARGET:kselftest/"
+fi
+
 log "Staging new/ slot on the Pi (current/ untouched)"
 ssh_pi "sudo sh -euc '
   set -eu
@@ -422,6 +446,9 @@ cat <<EOF
 $(log "Tryboot issued — the Pi boots new/ exactly once.")
   After it comes back, verify:
       ssh $DEPLOY_TARGET 'uname -r'      # expect: $KREL
+  Run the kselftests on it (run_kselftest.sh: -l list, -c COLLECTION, -t COLLECTION:TEST):
+      ssh $DEPLOY_TARGET 'cd kselftest && sudo ./run_kselftest.sh -c net'
+      ssh $DEPLOY_TARGET 'cd kselftest && sudo ./run_kselftest.sh -t net:reuseport_bpf'
   If it booted and looks good, make it permanent:
       $0 --promote
   If it did NOT come back (or shows the old kernel), it failed safely — the

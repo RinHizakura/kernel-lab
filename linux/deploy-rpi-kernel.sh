@@ -30,7 +30,8 @@ set -euo pipefail
 : "${LLVM:=}"                             # set LLVM=1 to build with clang/lld
                                           # (required for arm64 KCOV with gcc < 12)
 : "${JOBS:=$(nproc)}"
-: "${DEFCONFIG:=bcm2711_defconfig}"       # in-tree defconfig (arch/arm64/configs/)
+: "${DEFCONFIG:=defconfig}"               # in-tree defconfig (arch/arm64/configs/)
+                                          # Pi downstream trees: DEFCONFIG=bcm2711_defconfig
 : "${BOOT_DIR:=/boot/firmware}"           # Raspberry Pi boot partition mount
 LOCALVERSION_USER="${LOCALVERSION+set}"
 : "${LOCALVERSION:=}"

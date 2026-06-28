@@ -11,15 +11,11 @@
 # Flow:
 #   ./deploy-rpi-kernel.sh            # build, stage new/, reboot once into it (tryboot)
 #   ssh $DEPLOY_TARGET uname -r       # confirm it's your kernel
-#   ./deploy-rpi-kernel.sh --promote  # make it permanent: new/ -> current/, old kept as old/
+#   ./deploy-rpi-kernel.sh --promote  # make it permanent: new/ -> current/
 #
 # If the tryboot kernel fails to boot, just power-cycle: the firmware reverts to
 # current/ automatically (tryboot is one-shot). current/ is only changed by
 # --promote, which refuses unless the Pi is actually running the new kernel.
-#
-# Recovery if a *promoted* kernel later misbehaves (from another PC with the SD
-# card, or via UART): edit /boot/firmware/config.txt -> change os_prefix=current/
-# to os_prefix=old/, save, reboot.
 #
 # The remote user needs passwordless sudo, and initramfs-tools (default on Ubuntu).
 #
@@ -129,13 +125,13 @@ done
   die "Set the SSH target: --target pi@HOST  (or export DEPLOY_TARGET)"
 
 # ---------------------------------------------------------------------------
-# Promote: rotate new/ -> current/ (previous current/ -> old/), no build.
+# Promote: new/ -> current/ (previous current/ discarded), no build.
 # Refuses unless the Pi is actually running the kernel staged in new/.
 # ---------------------------------------------------------------------------
 if [ "$DO_PROMOTE" = 1 ]; then
   log "Checking connectivity to $DEPLOY_TARGET"
   ssh_pi true || die "Cannot reach $DEPLOY_TARGET over SSH"
-  log "Promoting new/ -> current/ (previous current/ -> old/)"
+  log "Promoting new/ -> current/ (previous current/ discarded)"
   ssh_pi "sudo sh -euc '
     set -eu
     BOOT=\"$BOOT_DIR\"
@@ -147,12 +143,11 @@ if [ "$DO_PROMOTE" = 1 ]; then
       echo \"Boot the new kernel first:  sudo reboot \\\"0 tryboot\\\"  then re-run --promote.\"
       exit 1
     fi
-    rm -rf \"\$BOOT/old\"
-    mv \"\$BOOT/current\" \"\$BOOT/old\"
-    mv \"\$BOOT/new\"     \"\$BOOT/current\"
-    echo \"promoted: current/=\$run ; old/=previous (fallback)\"
+    rm -rf \"\$BOOT/current\"
+    mv \"\$BOOT/new\" \"\$BOOT/current\"
+    echo \"promoted: current/=\$run\"
   '"
-  log "Done. Normal reboots now run your kernel from current/. Fallback kept in old/."
+  log "Done. Normal reboots now run your kernel from current/."
   exit 0
 fi
 

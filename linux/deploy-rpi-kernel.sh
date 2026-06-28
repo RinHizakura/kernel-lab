@@ -144,8 +144,16 @@ if [ "$DO_PROMOTE" = 1 ]; then
       echo \"Boot the new kernel first:  sudo reboot \\\"0 tryboot\\\"  then re-run --promote.\"
       exit 1
     fi
+    # krel of the kernel being replaced (written into current/ by a prior promote)
+    # so we can purge its rootfs leftovers and not pile up dead kernels.
+    old=\$(cat \"\$BOOT/current/.deploy-krel\" 2>/dev/null || echo \"\")
     rm -rf \"\$BOOT/current\"
     mv \"\$BOOT/new\" \"\$BOOT/current\"
+    # guard: never delete the kernel we just promoted to (run).
+    if [ -n \"\$old\" ] && [ \"\$old\" != \"\$run\" ]; then
+      rm -rf \"/lib/modules/\$old\" \"/boot/System.map-\$old\" \"/boot/config-\$old\"
+      echo \"purged old kernel: \$old\"
+    fi
     echo \"promoted: current/=\$run\"
   '"
   log "Done. Normal reboots now run your kernel from current/."

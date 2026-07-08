@@ -275,8 +275,10 @@ finalize_localversion() {
 
   finalize_localversion
 
-  log "Building Image, modules and DTBs (-j$JOBS)"
-  "${MAKE[@]}" Image modules dtbs
+  log "Building Image.gz, modules and DTBs (-j$JOBS)"
+  # Image.gz (not raw Image): the RPi firmware detects the gzip magic and
+  # decompresses on load, so the boot-partition vmlinuz shrinks ~3-4x.
+  "${MAKE[@]}" Image.gz modules dtbs
 
   log "Installing modules into staging dir"
   rm -rf "$STAGE_DIR"
@@ -301,7 +303,7 @@ KREL="$("${MAKE[@]}" -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"
 log "Kernel release: $KREL  ->  $BOOT_DIR/new/ (tryboot slot; current/ untouched)"
 
-IMAGE="$SRC_DIR/arch/arm64/boot/Image"
+IMAGE="$SRC_DIR/arch/arm64/boot/Image.gz"
 CONFIG_SRC="$SRC_DIR/.config"
 SYSMAP_SRC="$SRC_DIR/System.map"
 DTB_NAME="bcm2711-rpi-4-b.dtb"
@@ -369,18 +371,12 @@ esac
 printf '%s' "$NEW_CMDLINE" > "$DTB_WORK/cmdline.txt"
 log "  -> $NEW_CMDLINE"
 
-# Bail out before sending anything if the Pi can't hold the payload.
-#   rootfs (ext4): modules + System.map + config install here; vmlinuz also transits
-#     REMOTE_TMP (/tmp) en route to the FAT slot — so sum all four.
-#   boot (FAT32): the new/ slot is a full clone of current/ (vfat can't share via
-#     symlink/hardlink) plus the new vmlinuz that replaces the stock one.
-log "Checking free space on the Pi"
+# Rootfs (ext4, 29G): the big module tree installs here; vmlinuz/System.map/
+# config also transit REMOTE_TMP (/tmp) — sum them. The boot-slot (FAT) check is
+# deferred until after the initrd is built.
+log "Checking free space on the Pi rootfs"
 ROOTFS_KB=$(du -skc "$STAGE_DIR/lib/modules/$KREL" "$IMAGE" "$SYSMAP_SRC" "$CONFIG_SRC" | tail -1 | cut -f1)
 require_space "/lib/modules" "/lib/modules/$KREL" "$ROOTFS_KB" "modules + System.map + vmlinuz"
-
-CURRENT_KB=$(ssh_pi "du -sk '$BOOT_DIR/current' | cut -f1")
-VMLINUZ_KB=$(du -sk "$IMAGE" | cut -f1)
-require_space "$BOOT_DIR" "$BOOT_DIR/new" "$(( CURRENT_KB + VMLINUZ_KB ))" "boot new/ slot"
 
 log "Copying artifacts to the Pi (md5-skip unchanged)"
 stage_copy "$IMAGE"      vmlinuz            "$BOOT_DIR/new/vmlinuz"
@@ -405,31 +401,41 @@ if [ -d "$KSELF_STAGE" ]; then
     "$KSELF_STAGE/" "$DEPLOY_TARGET:kselftest/"
 fi
 
+# Build the initrd on the roomy rootfs (REMOTE_TMP is under /tmp), NOT straight
+# into the tight FAT slot — so its real size is known before we commit anything
+# to /boot/firmware. depmod + config/System.map must land first: mkinitramfs
+# reads them (config -> compression check; depmod -> module dep metadata).
+log "Building initrd on the Pi (staged on rootfs, not the boot slot)"
+ssh_pi "sudo sh -euc '
+  set -eu
+  depmod \"$KREL\"
+  install -m644 \"$REMOTE_TMP/config-$KREL\" \"/boot/config-$KREL\"
+  install -m600 \"$REMOTE_TMP/System.map-$KREL\" \"/boot/System.map-$KREL\"
+  mkinitramfs -o \"$REMOTE_TMP/initrd.img\" \"$KREL\"
+'"
+
+log "Checking free space on the Pi boot slot (measured)"
+CLONE_KB=$(ssh_pi "b='$BOOT_DIR/current'; echo \$(( \$(du -sk \"\$b\" | cut -f1) - \$(du -sk \"\$b/vmlinuz\" 2>/dev/null | cut -f1 || echo 0) - \$(du -sk \"\$b/initrd.img\" 2>/dev/null | cut -f1 || echo 0) ))")
+NEWFILES_KB=$(ssh_pi "du -skc \"$REMOTE_TMP/vmlinuz\" \"$REMOTE_TMP/initrd.img\" | tail -1 | cut -f1")
+require_space "$BOOT_DIR" "$BOOT_DIR/new" "$(( CLONE_KB + NEWFILES_KB ))" "boot new/ slot"
+
 log "Staging new/ slot on the Pi (current/ untouched)"
 ssh_pi "sudo sh -euc '
   set -eu
   BOOT=\"$BOOT_DIR\"
   [ -d \"\$BOOT/current\" ] || { echo \"no \$BOOT/current slot\"; exit 1; }
-  # modules were synced into /lib/modules/$KREL already; refresh dep metadata
-  # before the initramfs is built from them.
-  depmod \"$KREL\"
-  # kernel config -> /boot/config-<KREL> so mkinitramfs can verify compression
-  install -m644 \"$REMOTE_TMP/config-$KREL\" \"/boot/config-$KREL\"
-  # System.map -> rootfs (debug aid; mode 600 to match stock)
-  install -m600 \"$REMOTE_TMP/System.map-$KREL\" \"/boot/System.map-$KREL\"
-  # build the new/ tryboot slot: clone golden current/ (keeps firmware blobs,
-  # overlays dir, config.txt path), then apply the upstream-DTB recipe on top.
   rm -rf \"\$BOOT/new\"
-  cp -r \"\$BOOT/current\" \"\$BOOT/new\"
-  install -m644 \"$REMOTE_TMP/vmlinuz\"  \"\$BOOT/new/vmlinuz\"
-  install -m644 \"$REMOTE_TMP/$DTB_NAME\" \"\$BOOT/new/$DTB_NAME\"
+  mkdir \"\$BOOT/new\"
+  rsync -a --exclude=vmlinuz --exclude=initrd.img \"\$BOOT/current/\" \"\$BOOT/new/\"
+  install -m644 \"$REMOTE_TMP/vmlinuz\"    \"\$BOOT/new/vmlinuz\"
+  install -m644 \"$REMOTE_TMP/initrd.img\" \"\$BOOT/new/initrd.img\"
+  install -m644 \"$REMOTE_TMP/$DTB_NAME\"  \"\$BOOT/new/$DTB_NAME\"
   install -m644 \"$REMOTE_TMP/cmdline.txt\" \"\$BOOT/new/cmdline.txt\"
   # neutralise vendor overlays that corrupt the upstream DTB (no-op, per-slot)
   for ov in $NEUTRALIZE_OVERLAYS; do
     [ -e \"\$BOOT/new/overlays/\$ov.dtbo\" ] && \
       install -m644 \"$REMOTE_TMP/noop.dtbo\" \"\$BOOT/new/overlays/\$ov.dtbo\"
   done
-  mkinitramfs -o \"\$BOOT/new/initrd.img\" \"$KREL\"
   printf %s \"$KREL\" > \"\$BOOT/new/.deploy-krel\"
   rm -rf \"$REMOTE_TMP\"
   echo \"new/ slot ready: $KREL \"

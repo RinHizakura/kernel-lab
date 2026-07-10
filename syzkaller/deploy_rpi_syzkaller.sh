@@ -113,9 +113,19 @@ EOF
     cat "$CONFIG"
 }
 
+# KASAN_INLINE + PROVE_LOCKING + KCOV_INSTRUMENT_ALL make this kernel boot ~5-10x
+# slower, so the SDIO wifi (wlan0) doesn't enumerate before timeout. Bump the
+# device timeout so netplan waits it out.
+stage_target_tweaks() {
+    ssh "$DEPLOY_TARGET" 'sudo sh -euc "mkdir -p /etc/systemd/system.conf.d; printf \"[Manager]\nDefaultDeviceTimeoutSec=300\n\" > /etc/systemd/system.conf.d/slow-debug-kernel.conf"'
+    msg "Set DefaultDeviceTimeoutSec=300 on $DEPLOY_TARGET (slow-boot wifi fix)"
+}
+
 main() {
     msg "starting stage: build_syzkaller (arm64)"
     stage_build
+    msg "starting stage: target tweaks (slow-boot wifi fix)"
+    stage_target_tweaks
     msg "starting stage: kernel (cross-build + tryboot deploy to $DEPLOY_TARGET)"
     stage_kernel
     msg "starting stage: config (isolated)"

@@ -101,6 +101,7 @@ stage_config() {
     "syzkaller": "$SRC_DIR",
     "procs": $PROCS,
     "type": "isolated",
+    "disable_syscalls": ["write\$rfkill"],
     "vm": {
         "targets": ["$HOST"],
         "pstore": false,

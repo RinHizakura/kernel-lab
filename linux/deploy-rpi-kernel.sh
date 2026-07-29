@@ -179,12 +179,12 @@ MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLV
 finalize_localversion() {
   if [ -n "$LOCALVERSION_USER" ]; then return; fi
   [ -f "$SRC_DIR/.config" ] || die "no .config yet — cannot derive version hash"
-  local head tok
-  head="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo nogit)"
-  tok="$( { printf '%s\n' "$head"; cat "$SRC_DIR/.config"; } | sha1sum | cut -c1-8 )"
-  LOCALVERSION="-g${tok}"
+  local cfg head
+  cfg="$(sha1sum "$SRC_DIR/.config" | cut -c1-8)"
+  head="$(git -C "$SRC_DIR" rev-parse --short=8 HEAD 2>/dev/null || echo nogit)"
+  LOCALVERSION="-g${cfg}-${head}"
   MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} LOCALVERSION="$LOCALVERSION" -j"$JOBS")
-  log "Auto version suffix: $LOCALVERSION (hash of source HEAD + .config)"
+  log "Auto version suffix: $LOCALVERSION (.config sha1 + git HEAD)"
 }
 
 # ---------------------------------------------------------------------------

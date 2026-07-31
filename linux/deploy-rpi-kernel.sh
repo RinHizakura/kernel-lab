@@ -40,6 +40,7 @@ LOCALVERSION_USER="${LOCALVERSION+set}"
 : "${CONFIG_FRAGMENTS:=}"  # space-separated .config fragments merged on top (e.g. syzkaller KCOV/KASAN)
 
 DO_PROMOTE=0
+DO_LIST=0
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
 
 # SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
@@ -98,6 +99,7 @@ Flags:
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
+  --list               Show kernels on the Pi (running, boot slots, /lib/modules); skips build
   -h, --help           This help
 EOF
 }
@@ -111,6 +113,7 @@ while [ $# -gt 0 ]; do
     --localversion) LOCALVERSION="$2"; LOCALVERSION_USER=set; shift 2;;
     --defconfig)    DO_DEFCONFIG=force; shift;;
     --promote)      DO_PROMOTE=1; shift;;
+    --list)         DO_LIST=1; shift;;
     -h|--help)      usage; exit 0;;
     *)              die "Unknown argument: $1 (try --help)";;
   esac
@@ -118,6 +121,25 @@ done
 
 [ "$DEPLOY_TARGET" = "pi@CHANGE-ME" ] && \
   die "Set the SSH target: --target pi@HOST  (or export DEPLOY_TARGET)"
+
+# ---------------------------------------------------------------------------
+# List: show kernels on the Pi (running, boot slots, /lib/modules), no build.
+# ---------------------------------------------------------------------------
+if [ "$DO_LIST" = 1 ]; then
+  ssh_pi "sh -euc '
+    BOOT=\"$BOOT_DIR\"
+    echo \"running:   \$(uname -r)\"
+    for slot in current new; do
+      krel=\$(cat \"\$BOOT/\$slot/.deploy-krel\" 2>/dev/null || echo \"-\")
+      echo \"\$slot/:  \$krel\"
+    done
+    echo \"modules:\"
+    ls /lib/modules | sed \"s/^/  /\"
+    echo \"packages:\"
+    dpkg-query -W -f \"\\\${db:Status-Abbrev} \\\${Package} \\\${Version}\n\" \"linux-image-*\" 2>/dev/null | awk \"/^ii/ {print \\\"  \\\" \\\$2, \\\$3}\" || true
+  '" || die "Cannot reach $DEPLOY_TARGET over SSH"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Promote: new/ -> current/ (previous current/ discarded), no build.

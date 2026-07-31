@@ -41,6 +41,8 @@ LOCALVERSION_USER="${LOCALVERSION+set}"
 
 DO_PROMOTE=0
 DO_LIST=0
+DO_SWITCH=""
+DO_DELETE=""
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
 
 # SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
@@ -100,6 +102,10 @@ Flags:
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
   --list               Show kernels on the Pi (running, boot slots, /lib/modules); skips build
+  --switch KREL        Tryboot into an installed kernel (/boot/vmlinuz-KREL); skips build.
+                       Verify with 'uname -r', then --promote — same flow as a deploy.
+  --delete KREL        Remove a kernel from the Pi (refuses the running kernel and the
+                       one current/ boots; dpkg-managed kernels go through apt purge)
   -h, --help           This help
 EOF
 }
@@ -114,6 +120,8 @@ while [ $# -gt 0 ]; do
     --defconfig)    DO_DEFCONFIG=force; shift;;
     --promote)      DO_PROMOTE=1; shift;;
     --list)         DO_LIST=1; shift;;
+    --switch)       DO_SWITCH="$2"; shift 2;;
+    --delete)       DO_DELETE="$2"; shift 2;;
     -h|--help)      usage; exit 0;;
     *)              die "Unknown argument: $1 (try --help)";;
   esac
@@ -142,13 +150,91 @@ if [ "$DO_LIST" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Promote: new/ -> current/ (previous current/ discarded), no build.
+# Delete: remove a kernel from the Pi, no build. Refuses the running kernel
+# and whatever current/ boots. dpkg-managed kernels go through apt purge so
+# the package database stays consistent.
+# ---------------------------------------------------------------------------
+if [ -n "$DO_DELETE" ]; then
+  log "Deleting kernel $DO_DELETE on $DEPLOY_TARGET"
+  ssh_pi "sudo sh -euc '
+    set -eu
+    K=\"$DO_DELETE\"
+    BOOT=\"$BOOT_DIR\"
+    run=\$(uname -r)
+    cur=\$(cat \"\$BOOT/current/.deploy-krel\" 2>/dev/null || echo \"\")
+    [ \"\$K\" != \"\$run\" ] || { echo \"REFUSING: \$K is the running kernel\"; exit 1; }
+    [ \"\$K\" != \"\$cur\" ] || { echo \"REFUSING: \$K is what current/ boots\"; exit 1; }
+    if dpkg-query -W -f \"\\\${db:Status-Abbrev}\" \"linux-image-\$K\" 2>/dev/null | grep -q \"^ii\"; then
+      echo \"dpkg-managed kernel -> apt purge\"
+      DEBIAN_FRONTEND=noninteractive apt-get purge -y \"linux-image-\$K\" \"linux-modules-\$K\"
+    elif [ -d \"/lib/modules/\$K\" ] || [ -f \"/boot/vmlinuz-\$K\" ]; then
+      rm -rf \"/lib/modules/\$K\" \"/boot/vmlinuz-\$K\" \"/boot/initrd.img-\$K\" \
+             \"/boot/System.map-\$K\" \"/boot/config-\$K\"
+    else
+      echo \"no such kernel on the Pi: \$K (try --list)\"; exit 1
+    fi
+    echo \"deleted: \$K\"
+  '"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Switch: stage an already-installed kernel (/boot/vmlinuz-KREL) into the new/
+# tryboot slot and boot it once, no build. Same safety as a deploy: current/
+# is untouched, a failed boot power-cycles back, --promote makes it permanent.
+# ---------------------------------------------------------------------------
+if [ -n "$DO_SWITCH" ]; then
+  log "Checking connectivity to $DEPLOY_TARGET"
+  ssh_pi true || die "Cannot reach $DEPLOY_TARGET over SSH"
+  log "Verifying A/B tryboot layout on the Pi"
+  ssh_pi "test -d '$BOOT_DIR/current' && grep -q 'tryboot_a_b=1' '$BOOT_DIR/autoboot.txt' && grep -q 'os_prefix=new/' '$BOOT_DIR/config.txt'" \
+    || die "Pi is not using the current//new/ A/B tryboot layout — aborting to stay brick-safe."
+  log "Staging $DO_SWITCH into new/ (tryboot slot; current/ untouched)"
+  ssh_pi "sudo sh -euc '
+    set -eu
+    K=\"$DO_SWITCH\"
+    BOOT=\"$BOOT_DIR\"
+    [ -f \"/boot/vmlinuz-\$K\" ] || { echo \"no /boot/vmlinuz-\$K on the Pi — try --list\"; exit 1; }
+    [ -d \"/lib/modules/\$K\" ]  || { echo \"no /lib/modules/\$K on the Pi — kernel not usable\"; exit 1; }
+    rm -rf \"\$BOOT/new\"
+    mkdir \"\$BOOT/new\"
+    # ponytail: cmdline.txt is cloned from current/ as-is (console=ttyS1) — a
+    # distro kernel names the mini-uart differently, so only serial console is
+    # affected; fix per-slot if you need getty on the 40-pin header.
+    rsync -a --exclude=vmlinuz --exclude=initrd.img \"\$BOOT/current/\" \"\$BOOT/new/\"
+    install -m644 \"/boot/vmlinuz-\$K\" \"\$BOOT/new/vmlinuz\"
+    if [ -f \"/boot/initrd.img-\$K\" ]; then
+      install -m644 \"/boot/initrd.img-\$K\" \"\$BOOT/new/initrd.img\"
+    else
+      mkinitramfs -o \"\$BOOT/new/initrd.img\" \"\$K\"
+    fi
+    # distro kernels ship their own DTBs/overlays — use them instead of the
+    # (possibly upstream/neutralized) ones cloned from current/
+    DT=\"/lib/firmware/\$K/device-tree\"
+    if [ -d \"\$DT\" ]; then
+      cp \"\$DT\"/broadcom/*.dtb \"\$BOOT/new/\"
+      rm -rf \"\$BOOT/new/overlays\"
+      mkdir \"\$BOOT/new/overlays\"
+      cp \"\$DT\"/overlays/* \"\$BOOT/new/overlays/\"
+    fi
+    printf %s \"\$K\" > \"\$BOOT/new/.deploy-krel\"
+    echo \"new/ slot ready: \$K\"
+  '"
+  log "Rebooting once into the new/ slot via tryboot"
+  ssh_pi "sudo reboot '0 tryboot'" || true
+  log "After it comes back: ssh $DEPLOY_TARGET uname -r  (expect $DO_SWITCH), then $0 --promote"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Promote: new/ -> current/, no build. The replaced kernel is kept bootable
+# (image/initrd parked in /boot for --switch; remove with --delete).
 # Refuses unless the Pi is actually running the kernel staged in new/.
 # ---------------------------------------------------------------------------
 if [ "$DO_PROMOTE" = 1 ]; then
   log "Checking connectivity to $DEPLOY_TARGET"
   ssh_pi true || die "Cannot reach $DEPLOY_TARGET over SSH"
-  log "Promoting new/ -> current/ (previous current/ discarded)"
+  log "Promoting new/ -> current/ (replaced kernel kept; --delete to reclaim)"
   ssh_pi "sudo sh -euc '
     set -eu
     BOOT=\"$BOOT_DIR\"
@@ -160,16 +246,17 @@ if [ "$DO_PROMOTE" = 1 ]; then
       echo \"Boot the new kernel first:  sudo reboot \\\"0 tryboot\\\"  then re-run --promote.\"
       exit 1
     fi
-    # krel of the kernel being replaced (written into current/ by a prior promote)
-    # so we can purge its rootfs leftovers and not pile up dead kernels.
+    # keep the replaced kernel: park its image/initrd under /boot (its modules/
+    # System.map/config are already there) so --switch can boot it again later.
+    # Reclaim space explicitly with --delete.
     old=\$(cat \"\$BOOT/current/.deploy-krel\" 2>/dev/null || echo \"\")
+    if [ -n \"\$old\" ] && [ \"\$old\" != \"\$run\" ]; then
+      install -m600 \"\$BOOT/current/vmlinuz\"    \"/boot/vmlinuz-\$old\"
+      install -m600 \"\$BOOT/current/initrd.img\" \"/boot/initrd.img-\$old\"
+      echo \"kept old kernel \$old: vmlinuz/initrd parked in /boot (reclaim with --delete)\"
+    fi
     rm -rf \"\$BOOT/current\"
     mv \"\$BOOT/new\" \"\$BOOT/current\"
-    # guard: never delete the kernel we just promoted to (run).
-    if [ -n \"\$old\" ] && [ \"\$old\" != \"\$run\" ]; then
-      rm -rf \"/lib/modules/\$old\" \"/boot/System.map-\$old\" \"/boot/config-\$old\"
-      echo \"purged old kernel: \$old\"
-    fi
     echo \"promoted: current/=\$run\"
   '"
   log "Done. Normal reboots now run your kernel from current/."

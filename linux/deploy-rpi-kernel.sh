@@ -200,9 +200,6 @@ if [ -n "$DO_SWITCH" ]; then
     [ -d \"/lib/modules/\$K\" ]  || { echo \"no /lib/modules/\$K on the Pi — kernel not usable\"; exit 1; }
     rm -rf \"\$BOOT/new\"
     mkdir \"\$BOOT/new\"
-    # ponytail: cmdline.txt is cloned from current/ as-is (console=ttyS1) — a
-    # distro kernel names the mini-uart differently, so only serial console is
-    # affected; fix per-slot if you need getty on the 40-pin header.
     rsync -a --exclude=vmlinuz --exclude=initrd.img \"\$BOOT/current/\" \"\$BOOT/new/\"
     install -m644 \"/boot/vmlinuz-\$K\" \"\$BOOT/new/vmlinuz\"
     if [ -f \"/boot/initrd.img-\$K\" ]; then
@@ -218,6 +215,13 @@ if [ -n "$DO_SWITCH" ]; then
       rm -rf \"\$BOOT/new/overlays\"
       mkdir \"\$BOOT/new/overlays\"
       cp \"\$DT\"/overlays/* \"\$BOOT/new/overlays/\"
+      # distro kernel: serial0 lets the firmware substitute the right device
+      # (ttyS0, or ttyAMA0 with disable-bt) per its downstream naming
+      sed -i -E \"s/console=(serial0|ttyAMA[0-9]|ttyS[0-9]+),[0-9]+/console=serial0,115200/\" \"\$BOOT/new/cmdline.txt\"
+    else
+      # upstream kernel: firmware serial0 substitution yields downstream names
+      # (ttyS0/ttyAMA0) that do not exist on mainline — its mini-uart is ttyS1
+      sed -i -E \"s/console=(serial0|ttyAMA[0-9]|ttyS[0-9]+),[0-9]+/console=ttyS1,115200/\" \"\$BOOT/new/cmdline.txt\"
     fi
     printf %s \"\$K\" > \"\$BOOT/new/.deploy-krel\"
     echo \"new/ slot ready: \$K\"

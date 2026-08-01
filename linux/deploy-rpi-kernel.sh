@@ -101,7 +101,7 @@ Flags:
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
-  --list               Show kernels on the Pi (running, boot slots, /lib/modules); skips build
+  --list               Show kernels on the Pi (running, boot slots, --switch candidates); skips build
   --switch KREL        Tryboot into an installed kernel (/boot/vmlinuz-KREL); skips build.
                        Verify with 'uname -r', then --promote — same flow as a deploy.
   --delete KREL        Remove a kernel from the Pi (refuses the running kernel and the
@@ -131,7 +131,7 @@ done
   die "Set the SSH target: --target pi@HOST  (or export DEPLOY_TARGET)"
 
 # ---------------------------------------------------------------------------
-# List: show kernels on the Pi (running, boot slots, /lib/modules), no build.
+# List: show kernels on the Pi (running, boot slots, --switch candidates), no build.
 # ---------------------------------------------------------------------------
 if [ "$DO_LIST" = 1 ]; then
   ssh_pi "sh -euc '
@@ -141,10 +141,12 @@ if [ "$DO_LIST" = 1 ]; then
       krel=\$(cat \"\$BOOT/\$slot/.deploy-krel\" 2>/dev/null || echo \"-\")
       echo \"\$slot/:  \$krel\"
     done
-    echo \"modules:\"
-    ls /lib/modules | sed \"s/^/  /\"
-    echo \"packages:\"
-    dpkg-query -W -f \"\\\${db:Status-Abbrev} \\\${Package} \\\${Version}\n\" \"linux-image-*\" 2>/dev/null | awk \"/^ii/ {print \\\"  \\\" \\\$2, \\\$3}\" || true
+    echo \"switchable:\"
+    for f in /boot/vmlinuz-*; do
+      [ -e \"\$f\" ] || continue
+      k=\${f#/boot/vmlinuz-}
+      [ -d \"/lib/modules/\$k\" ] && echo \"  \$k\"
+    done
   '" || die "Cannot reach $DEPLOY_TARGET over SSH"
   exit 0
 fi

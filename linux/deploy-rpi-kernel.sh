@@ -145,7 +145,7 @@ if [ "$DO_LIST" = 1 ]; then
     for f in /boot/vmlinuz-*; do
       [ -e \"\$f\" ] || continue
       k=\${f#/boot/vmlinuz-}
-      [ -d \"/lib/modules/\$k\" ] && echo \"  \$k\"
+      [ -d \"/lib/modules/\$k\" ] && [ -d \"/boot/slot-\$k\" ] && echo \"  \$k\"
     done
   '" || die "Cannot reach $DEPLOY_TARGET over SSH"
   exit 0
@@ -175,6 +175,7 @@ if [ -n "$DO_DELETE" ]; then
     else
       echo \"no such kernel on the Pi: \$K (try --list)\"; exit 1
     fi
+    rm -rf \"/boot/slot-\$K\"
     echo \"deleted: \$K\"
   '"
   exit 0
@@ -198,30 +199,17 @@ if [ -n "$DO_SWITCH" ]; then
     BOOT=\"$BOOT_DIR\"
     [ -f \"/boot/vmlinuz-\$K\" ] || { echo \"no /boot/vmlinuz-\$K on the Pi — try --list\"; exit 1; }
     [ -d \"/lib/modules/\$K\" ]  || { echo \"no /lib/modules/\$K on the Pi — kernel not usable\"; exit 1; }
+    [ -d \"/boot/slot-\$K\" ]    || { echo \"no /boot/slot-\$K on the Pi — only kernels promote has parked are switchable\"; exit 1; }
+    # restore the slot parked at promote time — the exact cmdline/DTB/overlay
+    # state this kernel last booted with
     rm -rf \"\$BOOT/new\"
     mkdir \"\$BOOT/new\"
-    rsync -a --exclude=vmlinuz --exclude=initrd.img \"\$BOOT/current/\" \"\$BOOT/new/\"
+    rsync -a \"/boot/slot-\$K/\" \"\$BOOT/new/\"
     install -m644 \"/boot/vmlinuz-\$K\" \"\$BOOT/new/vmlinuz\"
     if [ -f \"/boot/initrd.img-\$K\" ]; then
       install -m644 \"/boot/initrd.img-\$K\" \"\$BOOT/new/initrd.img\"
     else
       mkinitramfs -o \"\$BOOT/new/initrd.img\" \"\$K\"
-    fi
-    # distro kernels ship their own DTBs/overlays — use them instead of the
-    # (possibly upstream/neutralized) ones cloned from current/
-    DT=\"/lib/firmware/\$K/device-tree\"
-    if [ -d \"\$DT\" ]; then
-      cp \"\$DT\"/broadcom/*.dtb \"\$BOOT/new/\"
-      rm -rf \"\$BOOT/new/overlays\"
-      mkdir \"\$BOOT/new/overlays\"
-      cp \"\$DT\"/overlays/* \"\$BOOT/new/overlays/\"
-      # distro kernel: serial0 lets the firmware substitute the right device
-      # (ttyS0, or ttyAMA0 with disable-bt) per its downstream naming
-      sed -i -E \"s/console=(serial0|ttyAMA[0-9]|ttyS[0-9]+),[0-9]+/console=serial0,115200/\" \"\$BOOT/new/cmdline.txt\"
-    else
-      # upstream kernel: firmware serial0 substitution yields downstream names
-      # (ttyS0/ttyAMA0) that do not exist on mainline — its mini-uart is ttyS1
-      sed -i -E \"s/console=(serial0|ttyAMA[0-9]|ttyS[0-9]+),[0-9]+/console=ttyS1,115200/\" \"\$BOOT/new/cmdline.txt\"
     fi
     printf %s \"\$K\" > \"\$BOOT/new/.deploy-krel\"
     echo \"new/ slot ready: \$K\"
@@ -234,7 +222,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # Promote: new/ -> current/, no build. The replaced kernel is kept bootable
-# (image/initrd parked in /boot for --switch; remove with --delete).
+# (image/initrd/boot-slot parked in /boot for --switch; remove with --delete).
 # Refuses unless the Pi is actually running the kernel staged in new/.
 # ---------------------------------------------------------------------------
 if [ "$DO_PROMOTE" = 1 ]; then
@@ -259,7 +247,11 @@ if [ "$DO_PROMOTE" = 1 ]; then
     if [ -n \"\$old\" ] && [ \"\$old\" != \"\$run\" ]; then
       install -m600 \"\$BOOT/current/vmlinuz\"    \"/boot/vmlinuz-\$old\"
       install -m600 \"\$BOOT/current/initrd.img\" \"/boot/initrd.img-\$old\"
-      echo \"kept old kernel \$old: vmlinuz/initrd parked in /boot (reclaim with --delete)\"
+      # park the rest of the slot too (cmdline/DTBs/overlays) so --switch can
+      # restore the exact boot state instead of re-synthesizing it
+      rm -rf \"/boot/slot-\$old\"
+      rsync -a --exclude=vmlinuz --exclude=initrd.img \"\$BOOT/current/\" \"/boot/slot-\$old/\"
+      echo \"kept old kernel \$old: vmlinuz/initrd/slot parked in /boot (reclaim with --delete)\"
     fi
     rm -rf \"\$BOOT/current\"
     mv \"\$BOOT/new\" \"\$BOOT/current\"

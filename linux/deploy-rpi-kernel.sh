@@ -295,6 +295,84 @@ finalize_localversion() {
 }
 
 # ---------------------------------------------------------------------------
+# Kernel config: uniform setters + one function per concern
+# ---------------------------------------------------------------------------
+cfg()         { "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" "$@"; }
+cfg_enable()  { local opt; for opt in "$@"; do cfg --enable  "$opt"; done; }
+cfg_disable() { local opt; for opt in "$@"; do cfg --disable "$opt"; done; }
+
+# Deployment tweaks on top of the stock defconfig:
+#   - disable LOCALVERSION_AUTO so KREL stays a stable "X.Y.Z$LOCALVERSION"
+#     (no git hash / -dirty suffix) -> predictable module path on the Pi.
+#   - enable SQUASHFS_XZ: bcm2711_defconfig sets SQUASHFS=y but leaves the xz
+#     decompressor off. Ubuntu snaps are xz-compressed squashfs, so without
+#     this they fail to mount ("Filesystem uses xz compression. This is not
+#     supported") and systemd hangs at boot. SQUASHFS_XZ selects XZ_DEC,
+#     which olddefconfig pulls in.
+config_defconfig_tweaks() {
+  log "Applying config tweaks (disable LOCALVERSION_AUTO; enable SQUASHFS_XZ)"
+  cfg_disable LOCALVERSION_AUTO
+  cfg_enable SQUASHFS_XZ
+}
+
+# Ensure the netfilter/routing features Tailscale needs, on TOP of whatever
+# .config we ended up with (fresh defconfig OR reused).
+config_tailscale() {
+  log "Ensuring Tailscale/netfilter kernel options (=y)"
+  cfg_enable \
+    NF_TABLES NFT_COMPAT \
+    NF_CONNTRACK NF_NAT \
+    NETFILTER_XT_MATCH_COMMENT NETFILTER_XT_MATCH_MARK \
+    NETFILTER_XT_MATCH_CONNTRACK \
+    NETFILTER_XT_MATCH_CONNMARK NETFILTER_XT_TARGET_CONNMARK \
+    NETFILTER_XT_TARGET_MASQUERADE \
+    IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES \
+    WIREGUARD
+}
+
+# Firmware in /lib/firmware/brcm on the Pi is untouched by the kernel build.
+# The distro ships brcmfmac firmware ZSTD-compressed (.zst); without the
+# compressed-firmware loader the kernel only looks for the uncompressed names,
+# gets -ENOENT, and wlan0 never appears. FW_LOADER_COMPRESS_ZSTD lets it
+# decompress them in place.
+config_wifi() {
+  log "Ensuring Pi onboard wifi (brcmfmac) + ZSTD firmware loader are built"
+  cfg_enable \
+    CFG80211 MAC80211 \
+    BRCMUTIL BRCMFMAC \
+    FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD
+}
+
+config_hz_1000() {
+  log "Ensuring HZ=1000"
+  cfg_disable HZ_250
+  cfg_enable HZ_1000
+}
+
+config_preempt_sched() {
+  log "Ensuring PREEMPT_LAZY (dynamic) + schedutil default governor"
+  cfg_disable PREEMPT_NONE PREEMPT_VOLUNTARY PREEMPT
+  cfg_enable PREEMPT_LAZY PREEMPT_DYNAMIC
+  cfg_disable CPU_FREQ_DEFAULT_GOV_ONDEMAND CPU_FREQ_DEFAULT_GOV_PERFORMANCE
+  cfg_enable CPU_FREQ_GOV_SCHEDUTIL CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
+}
+
+# Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever
+# .config we have, using the kernel's own merge tool so dependencies resolve.
+config_merge_fragments() {
+  [ -n "$CONFIG_FRAGMENTS" ] || return 0
+  local frag
+  for frag in $CONFIG_FRAGMENTS; do
+    [ -f "$frag" ] || die "config fragment not found: $frag"
+  done
+  log "Merging extra config fragments: $CONFIG_FRAGMENTS"
+  # shellcheck disable=SC2086
+  env ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} \
+    "$SRC_DIR/scripts/kconfig/merge_config.sh" -m -O "$SRC_DIR" \
+    "$SRC_DIR/.config" $CONFIG_FRAGMENTS
+}
+
+# ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
   # Force-apply the tryboot patch before building (idempotent). Without it,
@@ -317,78 +395,20 @@ finalize_localversion() {
   if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$SRC_DIR/.config" ]; }; then
     log "Generating .config from $DEFCONFIG"
     "${MAKE[@]}" "$DEFCONFIG"
-    # Deployment tweaks on top of the stock defconfig:
-    #   - disable LOCALVERSION_AUTO so KREL stays a stable "X.Y.Z$LOCALVERSION"
-    #     (no git hash / -dirty suffix) -> predictable module path on the Pi.
-    #   - enable SQUASHFS_XZ: bcm2711_defconfig sets SQUASHFS=y but leaves the xz
-    #     decompressor off. Ubuntu snaps are xz-compressed squashfs, so without
-    #     this they fail to mount ("Filesystem uses xz compression. This is not
-    #     supported") and systemd hangs at boot. SQUASHFS_XZ selects XZ_DEC,
-    #     which olddefconfig pulls in.
-    log "Applying config tweaks (disable LOCALVERSION_AUTO; enable SQUASHFS_XZ)"
-    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --disable LOCALVERSION_AUTO
-    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable SQUASHFS_XZ
+    config_defconfig_tweaks
     "${MAKE[@]}" olddefconfig
   else
     log "Reusing existing .config"
   fi
 
-  # Ensure the netfilter/routing features Tailscale needs, on TOP of whatever
-  # .config we ended up with (fresh defconfig OR reused).
-  log "Ensuring Tailscale/netfilter kernel options (=y)"
-  TS_CONFIGS="
-    NF_TABLES NFT_COMPAT
-    NF_CONNTRACK NF_NAT
-    NETFILTER_XT_MATCH_COMMENT NETFILTER_XT_MATCH_MARK
-    NETFILTER_XT_MATCH_CONNTRACK
-    NETFILTER_XT_MATCH_CONNMARK NETFILTER_XT_TARGET_CONNMARK
-    NETFILTER_XT_TARGET_MASQUERADE
-    IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES
-    WIREGUARD
-  "
-  for opt in $TS_CONFIGS; do
-    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
-  done
+  # Apply extra config tweaks
+  config_tailscale
+  config_wifi
+  config_hz_1000
+  config_preempt_sched
 
-  # Firmware in /lib/firmware/brcm on the Pi is untouched by the kernel build.
-  # The distro ships brcmfmac firmware ZSTD-compressed (.zst); without the
-  # compressed-firmware loader the kernel only looks for the uncompressed names,
-  # gets -ENOENT, and wlan0 never appears. FW_LOADER_COMPRESS_ZSTD lets it
-  # decompress them in place.
-  log "Ensuring Pi onboard wifi (brcmfmac) + ZSTD firmware loader are built"
-  WIFI_CONFIGS="
-    CFG80211 MAC80211
-    BRCMUTIL BRCMFMAC
-    FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD
-  "
-  for opt in $WIFI_CONFIGS; do
-    "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
-  done
-
-  log "Ensuring HZ=1000"
-  "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --disable HZ_250 --enable HZ_1000
-
-  log "Ensuring PREEMPT_LAZY (dynamic) + schedutil default governor"
-  "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" \
-    --disable PREEMPT_NONE --disable PREEMPT_VOLUNTARY --disable PREEMPT \
-    --enable PREEMPT_LAZY --enable PREEMPT_DYNAMIC \
-    --enable CPU_FREQ_GOV_SCHEDUTIL \
-    --disable CPU_FREQ_DEFAULT_GOV_ONDEMAND \
-    --disable CPU_FREQ_DEFAULT_GOV_PERFORMANCE \
-    --enable CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
-
-  # Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever
-  # .config we have, using the kernel's own merge tool so dependencies resolve.
-  if [ -n "$CONFIG_FRAGMENTS" ]; then
-    for frag in $CONFIG_FRAGMENTS; do
-      [ -f "$frag" ] || die "config fragment not found: $frag"
-    done
-    log "Merging extra config fragments: $CONFIG_FRAGMENTS"
-    # shellcheck disable=SC2086
-    env ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} \
-      "$SRC_DIR/scripts/kconfig/merge_config.sh" -m -O "$SRC_DIR" \
-      "$SRC_DIR/.config" $CONFIG_FRAGMENTS
-  fi
+  # Apply any extra fragments provided by the user
+  config_merge_fragments
 
   "${MAKE[@]}" olddefconfig
 

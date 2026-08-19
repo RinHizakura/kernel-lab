@@ -350,11 +350,9 @@ config_hz_1000() {
 }
 
 config_preempt_sched() {
-  log "Ensuring PREEMPT_LAZY (dynamic) + schedutil default governor"
+  log "Ensuring PREEMPT_LAZY (dynamic)"
   cfg_disable PREEMPT_NONE PREEMPT_VOLUNTARY PREEMPT
   cfg_enable PREEMPT_LAZY PREEMPT_DYNAMIC
-  cfg_disable CPU_FREQ_DEFAULT_GOV_ONDEMAND CPU_FREQ_DEFAULT_GOV_PERFORMANCE
-  cfg_enable CPU_FREQ_GOV_SCHEDUTIL CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
 }
 
 # Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever

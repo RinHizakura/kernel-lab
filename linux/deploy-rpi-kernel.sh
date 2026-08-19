@@ -365,13 +365,17 @@ finalize_localversion() {
     "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --enable "$opt"
   done
 
-  # HZ=1000 to match Ubuntu's raspi kernel. At defconfig's HZ=250 the RPi4's
-  # Cortex-A72 sits in write-streaming (no-allocate) mode during long store
-  # streams and loses ~9% cache-regime write bandwidth. Every interrupt
-  # resets the core to write-allocate, so the denser tick keeps it in the
-  # fast mode.
-  log "Ensuring HZ=1000 (A72 write-streaming vs tick rate)"
+  log "Ensuring HZ=1000"
   "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" --disable HZ_250 --enable HZ_1000
+
+  log "Ensuring PREEMPT_LAZY (dynamic) + schedutil default governor"
+  "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" \
+    --disable PREEMPT_NONE --disable PREEMPT_VOLUNTARY --disable PREEMPT \
+    --enable PREEMPT_LAZY --enable PREEMPT_DYNAMIC \
+    --enable CPU_FREQ_GOV_SCHEDUTIL \
+    --disable CPU_FREQ_DEFAULT_GOV_ONDEMAND \
+    --disable CPU_FREQ_DEFAULT_GOV_PERFORMANCE \
+    --enable CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
 
   # Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever
   # .config we have, using the kernel's own merge tool so dependencies resolve.

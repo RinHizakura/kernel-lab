@@ -22,20 +22,20 @@
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────
-KSRC=""
+: "${KSRC:=}"
 WIN_HOME_WSL=""          # Windows home (WSL view)
 WIN_HOME_WIN=""              # same dir (Windows view, for .wslconfig)
 WSLCONFIG="$WIN_HOME_WSL/.wslconfig"
 # ─────────────────────────────────────────────────────
+
+# shellcheck source=build_kernel.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/build_kernel.sh"   # log/warn/die, kbuild_*
 
 MODE="deploy"      # deploy | compile | switch | list | delete
 SWITCH_TO=""
 DELETE_TO=""
 TAG=""             # build tag, e.g. A / B  (via -t or positional)
 
-log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '2,21p' "$0"; exit "${1:-0}"; }
 
 while getopts "cd:k:lt:h" opt; do
@@ -104,23 +104,23 @@ fi
 
 # ── Step 1: compile (skipped for switch-only) ────────
 if [ "$MODE" != "switch" ]; then
-  cd "$KSRC"
+  kbuild_check_tree
+  kbuild_check_tools
   # Bake the tag into LOCALVERSION so it lands in `uname -r` (and the module
   # dir name). Setting LOCALVERSION also drops the trailing "+" that
   # setlocalversion adds when it's unset. Untagged builds keep the "+".
-  LV=()
-  [ -n "$TAG" ] && LV=("LOCALVERSION=-$TAG")
-  log "make -j$(nproc) ${LV[*]:+(${LV[*]})}..."
-  make -j"$(nproc)" "${LV[@]}"
+  [ -n "$TAG" ] && LOCALVERSION="-$TAG"
+  log "make -j$JOBS ${TAG:+(LOCALVERSION=-$TAG)}..."
+  kbuild_make
   BZ="$KSRC/arch/x86/boot/bzImage"
   [ -f "$BZ" ] || die "bzImage not found after build"
 
-  VER="$(make -s kernelrelease "${LV[@]}")"   # already includes -$TAG
+  VER="$(kbuild_make -s kernelrelease)"   # already includes -$TAG
   DEST_NAME="bzImage-$VER"
   log "kernel version: $VER${TAG:+  (tag: $TAG)}"
 
   log "installing modules -> /lib/modules/$VER ..."
-  sudo make -s modules_install INSTALL_MOD_STRIP=1 "${LV[@]}"
+  KBUILD_SUDO=sudo kbuild_make -s modules_install INSTALL_MOD_STRIP=1
 
   # compile only: stage a tagged copy (so it's switchable later) but never touch .wslconfig
   if [ "$MODE" = "compile" ]; then

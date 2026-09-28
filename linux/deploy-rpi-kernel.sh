@@ -39,6 +39,10 @@ LOCALVERSION_USER="${LOCALVERSION+set}"
 : "${KSRC:=}"  # kernel source tree (absolute path)
 : "${CONFIG_FRAGMENTS:=}"  # space-separated .config fragments merged on top (e.g. syzkaller KCOV/KASAN)
 
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# shellcheck source=build_kernel.sh
+source "$SCRIPT_DIR/build_kernel.sh"   # log/warn/die, kbuild_*
+
 DO_PROMOTE=0
 DO_LIST=0
 DO_SWITCH=""
@@ -50,10 +54,6 @@ DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
-
 ssh_pi() {
   ssh $SSH_OPTS "$DEPLOY_TARGET" "$@"
 }
@@ -266,22 +266,13 @@ fi
 # ---------------------------------------------------------------------------
 SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd) \
   || die "KSRC not set or not a directory: '${KSRC}'  (edit KSRC at the top, or export it)"
-[ -f "$SRC_DIR/Makefile" ] && [ -d "$SRC_DIR/arch/$ARCH" ] \
-  || die "KSRC does not look like a kernel tree: $SRC_DIR"
+KSRC="$SRC_DIR"
+kbuild_check_tree
 STAGE_DIR="${SRC_DIR}/.deploy-staging"
 KSELF_STAGE="${SRC_DIR}/.deploy-kselftest"  # `make ... install` output: binaries + run_kselftest.sh, no .c
 log "Kernel source: $SRC_DIR"
 
-if [ -n "$LLVM" ]; then
-  # LLVM=1 -> clang; LLVM=-15 -> clang-15 (kernel's versioned-suffix convention)
-  case "$LLVM" in -*) CLANG_BIN="clang$LLVM";; *) CLANG_BIN="clang";; esac
-  command -v "$CLANG_BIN" >/dev/null 2>&1 || die "LLVM=$LLVM set but $CLANG_BIN not found in PATH"
-else
-  command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1 || \
-    die "Cross compiler ${CROSS_COMPILE}gcc not found in PATH"
-fi
-
-MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} LOCALVERSION="$LOCALVERSION" -j"$JOBS")
+kbuild_check_tools
 
 finalize_localversion() {
   if [ -n "$LOCALVERSION_USER" ]; then return; fi
@@ -290,16 +281,12 @@ finalize_localversion() {
   cfg="$(sha1sum "$SRC_DIR/.config" | cut -c1-8)"
   head="$(git -C "$SRC_DIR" rev-parse --short=8 HEAD 2>/dev/null || echo nogit)"
   LOCALVERSION="-g${cfg}-${head}"
-  MAKE=(make -C "$SRC_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} LOCALVERSION="$LOCALVERSION" -j"$JOBS")
   log "Auto version suffix: $LOCALVERSION (.config sha1 + git HEAD)"
 }
 
 # ---------------------------------------------------------------------------
-# Kernel config: uniform setters + one function per concern
+# Kernel config: one function per concern, via kbuild_enable/kbuild_disable
 # ---------------------------------------------------------------------------
-cfg()         { "$SRC_DIR/scripts/config" --file "$SRC_DIR/.config" "$@"; }
-cfg_enable()  { local opt; for opt in "$@"; do cfg --enable  "$opt"; done; }
-cfg_disable() { local opt; for opt in "$@"; do cfg --disable "$opt"; done; }
 
 # Deployment tweaks on top of the stock defconfig:
 #   - disable LOCALVERSION_AUTO so KREL stays a stable "X.Y.Z$LOCALVERSION"
@@ -311,15 +298,15 @@ cfg_disable() { local opt; for opt in "$@"; do cfg --disable "$opt"; done; }
 #     which olddefconfig pulls in.
 config_defconfig_tweaks() {
   log "Applying config tweaks (disable LOCALVERSION_AUTO; enable SQUASHFS_XZ)"
-  cfg_disable LOCALVERSION_AUTO
-  cfg_enable SQUASHFS_XZ
+  kbuild_disable LOCALVERSION_AUTO
+  kbuild_enable SQUASHFS_XZ
 }
 
 # Ensure the netfilter/routing features Tailscale needs, on TOP of whatever
 # .config we ended up with (fresh defconfig OR reused).
 config_tailscale() {
   log "Ensuring Tailscale/netfilter kernel options (=y)"
-  cfg_enable \
+  kbuild_enable \
     NF_TABLES NFT_COMPAT \
     NF_CONNTRACK NF_NAT \
     NETFILTER_XT_MATCH_COMMENT NETFILTER_XT_MATCH_MARK \
@@ -337,7 +324,7 @@ config_tailscale() {
 # decompress them in place.
 config_wifi() {
   log "Ensuring Pi onboard wifi (brcmfmac) + ZSTD firmware loader are built"
-  cfg_enable \
+  kbuild_enable \
     CFG80211 MAC80211 \
     BRCMUTIL BRCMFMAC \
     FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD
@@ -345,29 +332,14 @@ config_wifi() {
 
 config_hz_1000() {
   log "Ensuring HZ=1000"
-  cfg_disable HZ_250
-  cfg_enable HZ_1000
+  kbuild_disable HZ_250
+  kbuild_enable HZ_1000
 }
 
 config_preempt_sched() {
   log "Ensuring PREEMPT_LAZY (dynamic)"
-  cfg_disable PREEMPT_NONE PREEMPT_VOLUNTARY PREEMPT
-  cfg_enable PREEMPT_LAZY PREEMPT_DYNAMIC
-}
-
-# Extra fragments (e.g. syzkaller's KCOV/KASAN) merged on TOP of whatever
-# .config we have, using the kernel's own merge tool so dependencies resolve.
-config_merge_fragments() {
-  [ -n "$CONFIG_FRAGMENTS" ] || return 0
-  local frag
-  for frag in $CONFIG_FRAGMENTS; do
-    [ -f "$frag" ] || die "config fragment not found: $frag"
-  done
-  log "Merging extra config fragments: $CONFIG_FRAGMENTS"
-  # shellcheck disable=SC2086
-  env ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} \
-    "$SRC_DIR/scripts/kconfig/merge_config.sh" -m -O "$SRC_DIR" \
-    "$SRC_DIR/.config" $CONFIG_FRAGMENTS
+  kbuild_disable PREEMPT_NONE PREEMPT_VOLUNTARY PREEMPT
+  kbuild_enable PREEMPT_LAZY PREEMPT_DYNAMIC
 }
 
 # ---------------------------------------------------------------------------
@@ -377,7 +349,7 @@ config_merge_fragments() {
   # `reboot "0 tryboot"` is a no-op on mainline and the A/B deploy silently
   # never boots new/. Skip if already applied; die if it no longer applies
   # (after a rebase) rather than building a half-patched kernel.
-  KERNEL_PATCH="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/0001-firmware-rpi-tryboot-reboot.patch"
+  KERNEL_PATCH="$SCRIPT_DIR/0001-firmware-rpi-tryboot-reboot.patch"
   if [ -f "$KERNEL_PATCH" ]; then
     if git -C "$SRC_DIR" apply --reverse --check "$KERNEL_PATCH" 2>/dev/null; then
       log "tryboot patch already applied"
@@ -392,9 +364,9 @@ config_merge_fragments() {
 
   if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$SRC_DIR/.config" ]; }; then
     log "Generating .config from $DEFCONFIG"
-    "${MAKE[@]}" "$DEFCONFIG"
+    kbuild_make "$DEFCONFIG"
     config_defconfig_tweaks
-    "${MAKE[@]}" olddefconfig
+    kbuild_make olddefconfig
   else
     log "Reusing existing .config"
   fi
@@ -405,21 +377,21 @@ config_merge_fragments() {
   config_hz_1000
   config_preempt_sched
 
-  # Apply any extra fragments provided by the user
-  config_merge_fragments
+  # Apply any extra fragments provided by the user (e.g. syzkaller KCOV/KASAN)
+  kbuild_merge_fragments
 
-  "${MAKE[@]}" olddefconfig
+  kbuild_make olddefconfig
 
   finalize_localversion
 
   log "Building Image.gz, modules and DTBs (-j$JOBS)"
   # Image.gz (not raw Image): the RPi firmware detects the gzip magic and
   # decompresses on load, so the boot-partition vmlinuz shrinks ~3-4x.
-  "${MAKE[@]}" Image.gz modules dtbs
+  kbuild_make Image.gz modules dtbs
 
   log "Installing modules into staging dir"
   rm -rf "$STAGE_DIR"
-  "${MAKE[@]}" INSTALL_MOD_PATH="$STAGE_DIR" modules_install
+  kbuild_make INSTALL_MOD_PATH="$STAGE_DIR" modules_install
 
   # kselftests: `install` stages only the runnable artifacts (compiled binaries,
   # scripts, run_kselftest.sh) into KSELF_STAGE — no .c sources. Cross-compiling
@@ -427,7 +399,7 @@ config_merge_fragments() {
   # abort the kernel deploy.
   log "Building kselftests (cross-compile is best-effort)"
   rm -rf "$KSELF_STAGE"
-  "${MAKE[@]}" headers
+  kbuild_make headers
   if make -C "$SRC_DIR/tools/testing/selftests" \
        ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} -j"$JOBS" \
        install INSTALL_PATH="$KSELF_STAGE"; then
@@ -436,7 +408,7 @@ config_merge_fragments() {
     warn "kselftest build had failures — deploying whatever installed"
   fi
 
-KREL="$("${MAKE[@]}" -s kernelrelease 2>/dev/null)"
+KREL="$(kbuild_make -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"
 log "Kernel release: $KREL  ->  $BOOT_DIR/new/ (tryboot slot; current/ untouched)"
 

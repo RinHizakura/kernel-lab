@@ -105,9 +105,9 @@ kbuild_clone() {
 
 main() {
     case "$ARCH" in
-        x86_64) IMG_TARGET=bzImage ;;
-        arm64)  IMG_TARGET=Image ;;
-        *)      IMG_TARGET=vmlinux ;;
+        x86_64) IMG_TARGET="bzImage modules" ;;
+        arm64)  IMG_TARGET="Image modules dtbs" ;;
+        *)      IMG_TARGET="vmlinux modules" ;;
     esac
 
     kbuild_check_tools
@@ -135,7 +135,8 @@ main() {
     kbuild_make olddefconfig
 
     log "Building kernel ($IMG_TARGET)"
-    kbuild_make "$IMG_TARGET"
+    # shellcheck disable=SC2086
+    kbuild_make $IMG_TARGET
     log "Done."
 }
 

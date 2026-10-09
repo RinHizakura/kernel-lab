@@ -343,10 +343,9 @@ config_preempt_sched() {
 }
 
 # arm64 defconfig aligns functions to 4 bytes, so any code-size change anywhere
-# reshuffles every hot function's cache-line alignment: on the Cortex-A72 that
-# alone moved pinned pipe wakeup cost by ±5% between builds of adjacent -rc's
-# (kbench 2026-10). Forcing 64B alignment removes that lottery (+1% image size)
-# so kernel-to-kernel comparisons measure code, not layout. Needs EXPERT.
+# reshuffles every hot function's cache-line alignment. Forcing 64B alignment
+# removes that lottery (+1% image size) so kernel-to-kernel comparisons
+# measure code, not layout. Needs EXPERT.
 config_function_align64() {
   log "Ensuring 64B function alignment (DEBUG_FORCE_FUNCTION_ALIGN_64B)"
   kbuild_enable EXPERT DEBUG_FORCE_FUNCTION_ALIGN_64B

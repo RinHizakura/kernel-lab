@@ -101,7 +101,8 @@ Flags:
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
-  --list               Show kernels on the Pi (running, boot slots, --switch candidates); skips build
+  --list               Show kernels on the Pi (running, boot slots, --switch candidates,
+                       un-promoted leftovers); skips build
   --switch KREL        Tryboot into an installed kernel (/boot/vmlinuz-KREL); skips build.
                        Verify with 'uname -r', then --promote — same flow as a deploy.
   --delete KREL        Remove a kernel from the Pi (refuses the running kernel and the
@@ -146,6 +147,18 @@ if [ "$DO_LIST" = 1 ]; then
       [ -e \"\$f\" ] || continue
       k=\${f#/boot/vmlinuz-}
       [ -d \"/lib/modules/\$k\" ] && [ -d \"/boot/slot-\$k\" ] && echo \"  \$k\"
+    done
+    # modules left by a deploy that was never promoted (new/ got overwritten):
+    # not bootable, not switchable, only reclaimable with --delete
+    echo \"leftovers:\"
+    for d in /lib/modules/*/; do
+      k=\$(basename \"\$d\")
+      [ \"\$k\" = \"\$(uname -r)\" ] && continue
+      [ \"\$k\" = \"\$(cat \"\$BOOT/current/.deploy-krel\" 2>/dev/null)\" ] && continue
+      [ \"\$k\" = \"\$(cat \"\$BOOT/new/.deploy-krel\" 2>/dev/null)\" ] && continue
+      [ -d \"/boot/slot-\$k\" ] && continue
+      dpkg-query -W \"linux-image-\$k\" >/dev/null 2>&1 && continue
+      echo \"  \$k  (\$(du -sh \"\$d\" | cut -f1))\"
     done
   '" || die "Cannot reach $DEPLOY_TARGET over SSH"
   exit 0

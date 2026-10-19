@@ -25,7 +25,8 @@ auto-selects the locally built QEMU under install_<arch>/bin if present.
 
 Options:
   -a ARCH     Target architecture passed to vng --arch (e.g. arm64, riscv64).
-              Also selects install_<arch>/bin/qemu-system-<arch> when available.
+              Also selects install_<arch>/bin/qemu-system-<arch> when available
+              and defaults --root to <arch>-rootfs/ next to this script.
   -d DEVICE   Attach a storage device. Supported:
                 usb-storage   USB EHCI stick backed by $USBIMG
                 ufs           UFS host controller + LU backed by $UFSIMG
@@ -113,6 +114,12 @@ shift $((OPTIND - 1))
 
 if [[ -n $ARCH ]]; then
     OPT+=" --arch $ARCH"
+    # vng needs a foreign --root for a cross arch; default to the rootfs that
+    # make_<ARCH>_rootfs.sh builds next to this script unless one was given.
+    ROOTFS="$SCRIPT_DIR/$ARCH-rootfs"
+    if [[ -d $ROOTFS && " $* " != *" --root "* ]]; then
+        OPT+=" --root $ROOTFS"
+    fi
 fi
 
 # Use the locally built QEMU under install_<arch>/ if present, otherwise fall

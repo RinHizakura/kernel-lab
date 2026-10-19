@@ -22,11 +22,10 @@ JOBS="${JOBS:-$(nproc)}"
 
 CDIMAGE="http://cdimage.ubuntu.com/ubuntu-base/releases/$REL/release"
 PORTS="http://ports.ubuntu.com/ubuntu-ports"
-# Packages unpacked on top of the base image. udev is what creates
-# /dev/virtio-ports/*, which vng needs to return the script's exit code.
-DEBS="busybox-static udev libkmod2"
+# Packages unpacked on top of the base image.
+DEBS="busybox-static"
 # busybox applets that vng's guest init / typical kernel testing expects.
-APPLETS="poweroff reboot halt ip modprobe insmod rmmod depmod lsmod"
+APPLETS="poweroff reboot halt ip modprobe insmod rmmod depmod lsmod deallocvt"
 
 msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -68,6 +67,26 @@ for a in $APPLETS; do
 done
 ln -sf /bin/busybox "$DEST/usr/bin/lsmod"
 mkdir -p "$DEST/etc/lvm"   # vng's init bind-mounts it; base image lacks it
+
+# vng's init runs udevd + a full coldplug if it finds one, then looks for
+# /dev/virtio-ports/<name> (udev's symlinks) to return the script's exit
+# code. Real udev's coldplug costs ~45 s under TCG; those symlinks are all
+# we need, so ship a stub udevd that only creates them and a no-op udevadm.
+# ponytail: stub udev; unpack the udev deb instead if a test needs real udev rules.
+msg "Installing stub udevd (virtio-ports symlinks only)"
+mkdir -p "$DEST/usr/lib/systemd"
+cat > "$DEST/usr/lib/systemd/systemd-udevd" <<'STUB'
+#!/bin/sh
+# Stub udevd for virtme-ng: only the /dev/virtio-ports/* symlinks.
+mkdir -p /dev/virtio-ports
+for d in /sys/class/virtio-ports/vport*; do
+    n=$(cat "$d/name" 2>/dev/null) || continue
+    [ -n "$n" ] && ln -sf "/dev/${d##*/}" "/dev/virtio-ports/$n"
+done
+exit 0
+STUB
+printf '#!/bin/sh\nexit 0\n' > "$DEST/usr/bin/udevadm"
+chmod +x "$DEST/usr/lib/systemd/systemd-udevd" "$DEST/usr/bin/udevadm"
 
 if [[ -n $KSRC ]]; then
     msg "Installing modules from $KSRC"

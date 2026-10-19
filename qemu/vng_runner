@@ -120,6 +120,11 @@ if [[ -n $ARCH ]]; then
     if [[ -d $ROOTFS && " $* " != *" --root "* ]]; then
         OPT+=" --root $ROOTFS"
     fi
+    # A cross arch runs under TCG; vng's default of one vCPU per host core
+    # only slows boot down there. Override with --cpus N after --.
+    if [[ " $* " != *" --cpus "* ]]; then
+        OPT+=" --cpus 4"
+    fi
 fi
 
 # Use the locally built QEMU under install_<arch>/ if present, otherwise fall

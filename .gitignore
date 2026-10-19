@@ -1,4 +1,5 @@
 # QEMU build artifacts (qemu/build_qemu.sh)
-qemu/build/
 qemu/build_*/
 qemu/install_*/
+# arm64 rootfs built by qemu/make_arm64_rootfs.sh (default DEST=./arm64-rootfs)
+qemu/arm64-rootfs/

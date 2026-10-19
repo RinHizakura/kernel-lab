@@ -48,6 +48,7 @@ DO_LIST=0
 DO_SWITCH=""
 DO_DELETE=""
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
+DO_RT=""               # --rt: PREEMPT_RT instead of PREEMPT_LAZY
 
 # SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
 
@@ -100,6 +101,7 @@ Flags:
   --target USER@HOST   SSH target (default: \$DEPLOY_TARGET)
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
+  --rt                 Build a PREEMPT_RT (real-time) kernel instead of PREEMPT_LAZY
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
   --list               Show kernels on the Pi (running, boot slots, --switch candidates,
                        un-promoted leftovers); skips build
@@ -119,6 +121,7 @@ while [ $# -gt 0 ]; do
     --target)       DEPLOY_TARGET="$2"; shift 2;;
     --localversion) LOCALVERSION="$2"; LOCALVERSION_USER=set; shift 2;;
     --defconfig)    DO_DEFCONFIG=force; shift;;
+    --rt)           DO_RT=1; shift;;
     --promote)      DO_PROMOTE=1; shift;;
     --list)         DO_LIST=1; shift;;
     --switch)       DO_SWITCH="$2"; shift 2;;
@@ -293,7 +296,7 @@ finalize_localversion() {
   local cfg head
   cfg="$(sha1sum "$SRC_DIR/.config" | cut -c1-8)"
   head="$(git -C "$SRC_DIR" rev-parse --short=8 HEAD 2>/dev/null || echo nogit)"
-  LOCALVERSION="-g${cfg}-${head}"
+  LOCALVERSION="${DO_RT:+-rt}-g${cfg}-${head}"
   log "Auto version suffix: $LOCALVERSION (.config sha1 + git HEAD)"
 }
 
@@ -361,10 +364,17 @@ config_hz_1000() {
   kbuild_enable HZ_1000
 }
 
+# PREEMPT_RT is one choice in the same "Preemption Model" menu (needs EXPERT,
+# excludes PREEMPT_DYNAMIC), so --rt just picks a different member.
 config_preempt_sched() {
-  log "Ensuring PREEMPT_LAZY (dynamic)"
-  kbuild_disable PREEMPT_NONE PREEMPT_VOLUNTARY PREEMPT
-  kbuild_enable PREEMPT_LAZY PREEMPT_DYNAMIC
+  kbuild_disable PREEMPT_NONE PREEMPT_VOLUNTARY PREEMPT PREEMPT_LAZY PREEMPT_RT PREEMPT_DYNAMIC
+  if [ "$DO_RT" = 1 ]; then
+    log "Ensuring PREEMPT_RT (real-time)"
+    kbuild_enable EXPERT PREEMPT_RT
+  else
+    log "Ensuring PREEMPT_LAZY (dynamic)"
+    kbuild_enable PREEMPT_LAZY PREEMPT_DYNAMIC
+  fi
 }
 
 # arm64 defconfig aligns functions to 4 bytes, so any code-size change anywhere

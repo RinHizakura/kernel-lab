@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_BIN="$SCRIPT_DIR/install/bin"
 
 USBIMG=usb.img
 UFSIMG=ufs.img
@@ -22,11 +21,11 @@ function usage() {
 Usage: ${0##*/} [-h] [-a ARCH] [-d DEVICE] [-k] [-- VNG_ARGS...]
 
 Thin wrapper around vng (virtme-ng) that attaches extra QEMU devices and
-auto-selects the locally built QEMU under install/bin if present.
+auto-selects the locally built QEMU under install_<arch>/bin if present.
 
 Options:
   -a ARCH     Target architecture passed to vng --arch (e.g. arm64, riscv64).
-              Also selects install/bin/qemu-system-<arch> when available.
+              Also selects install_<arch>/bin/qemu-system-<arch> when available.
   -d DEVICE   Attach a storage device. Supported:
                 usb-storage   USB EHCI stick backed by $USBIMG
                 ufs           UFS host controller + LU backed by $UFSIMG
@@ -116,9 +115,10 @@ if [[ -n $ARCH ]]; then
     OPT+=" --arch $ARCH"
 fi
 
-# Use the locally built QEMU under install/ if present, otherwise fall back
-# to the system QEMU that vng picks by default.
-QEMU_BIN="$INSTALL_BIN/qemu-system-$(qemu_suffix "$ARCH")"
+# Use the locally built QEMU under install_<arch>/ if present, otherwise fall
+# back to the system QEMU that vng picks by default.
+QEMU_ARCH="$(qemu_suffix "$ARCH")"
+QEMU_BIN="$SCRIPT_DIR/install_$QEMU_ARCH/bin/qemu-system-$QEMU_ARCH"
 if [[ -x $QEMU_BIN ]]; then
     echo "Using local QEMU: $QEMU_BIN"
     OPT+=" --qemu $QEMU_BIN"

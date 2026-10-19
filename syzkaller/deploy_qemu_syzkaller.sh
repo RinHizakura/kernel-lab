@@ -40,7 +40,7 @@ MEM="${MEM:-2048}"
 # matches; otherwise udev renames it, ifup fails and syz-manager can't SSH in.
 CMDLINE="${CMDLINE:-net.ifnames=0}"
 # Prefer a locally built QEMU; fall back to PATH.
-QEMU="${QEMU:-$SCRIPT_DIR/../qemu/install/bin/qemu-system-x86_64}"
+QEMU="${QEMU:-$SCRIPT_DIR/../qemu/install_x86_64/bin/qemu-system-x86_64}"
 
 GOROOT="/usr/local/go"
 export PATH="$GOROOT/bin:$PATH"

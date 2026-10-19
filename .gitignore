@@ -1,3 +1,4 @@
 # QEMU build artifacts (qemu/build_qemu.sh)
 qemu/build/
-qemu/install/
+qemu/build_*/
+qemu/install_*/

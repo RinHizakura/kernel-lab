@@ -3,12 +3,13 @@
 # Clone the official QEMU git repo, build, and install under this folder.
 #
 # Layout (relative to this script):
-#   build/qemu/         git checkout of the official repo
-#   build/qemu/build/   out-of-tree build directory
-#   install/            install prefix (binaries land in install/bin)
+#   build/qemu/         git checkout of the official repo (shared by all archs)
+#   build_<ARCH>/       out-of-tree build directory, e.g. build_x86_64/
+#   install_<ARCH>/     install prefix, e.g. install_x86_64/bin
 #
 # Usage:
 #   ./build_qemu.sh                       # latest stable tag, x86_64 target
+#   ARCH=aarch64 ./build_qemu.sh          # build_aarch64/ + install_aarch64/, target aarch64-softmmu
 #   REF=master ./build_qemu.sh            # build the development tip
 #   REF=v9.2.0 ./build_qemu.sh            # build a specific tag/branch/commit
 #   TARGETS=x86_64-softmmu,aarch64-softmmu ./build_qemu.sh
@@ -17,12 +18,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/build"
-SRC_DIR="$BUILD_DIR/qemu"
-PREFIX="$SCRIPT_DIR/install"
+ARCH="${ARCH:-x86_64}"
+SRC_DIR="$SCRIPT_DIR/build/qemu"
+BUILD_DIR="$SCRIPT_DIR/build_$ARCH"
+PREFIX="$SCRIPT_DIR/install_$ARCH"
 REPO="${REPO:-https://gitlab.com/qemu-project/qemu.git}"
 
-TARGETS="${TARGETS:-x86_64-softmmu}"
+TARGETS="${TARGETS:-${ARCH}-softmmu}"
 JOBS="${JOBS:-$(nproc)}"
 
 msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
@@ -63,7 +65,7 @@ resolve_ref() {
 # is a tiny fraction of that and survives flaky links far better.
 sync_repo() {
     local ref=$1
-    mkdir -p "$BUILD_DIR"
+    mkdir -p "$(dirname "$SRC_DIR")"
     if [[ -d "$SRC_DIR/.git" ]]; then
         msg "Updating existing clone in $SRC_DIR (ref $ref)"
         git -C "$SRC_DIR" fetch --depth 1 origin \
@@ -87,6 +89,7 @@ main() {
 
     msg "Building ref : $ref"
     msg "Targets      : $TARGETS"
+    msg "Build dir    : $BUILD_DIR"
     msg "Prefix       : $PREFIX"
     msg "Parallel jobs: $JOBS"
 
@@ -99,16 +102,16 @@ main() {
         || die "submodule fetch failed"
 
     msg "Configuring"
-    rm -rf "$SRC_DIR/build"
-    mkdir -p "$SRC_DIR/build"
-    ( cd "$SRC_DIR/build" \
-        && ../configure --prefix="$PREFIX" --target-list="$TARGETS" --enable-slirp )
+    rm -rf "$BUILD_DIR"
+    mkdir -p "$BUILD_DIR"
+    ( cd "$BUILD_DIR" \
+        && "$SRC_DIR/configure" --prefix="$PREFIX" --target-list="$TARGETS" --enable-slirp )
 
     msg "Building (make -j$JOBS)"
-    make -C "$SRC_DIR/build" -j"$JOBS"
+    make -C "$BUILD_DIR" -j"$JOBS"
 
     msg "Installing to $PREFIX"
-    make -C "$SRC_DIR/build" install
+    make -C "$BUILD_DIR" install
 
     local qemu_bin
     qemu_bin="$(ls "$PREFIX"/bin/qemu-system-* 2>/dev/null | head -1 || true)"

@@ -142,5 +142,11 @@ fi
 # Run vng with bash shell by default, just for faster booting
 OPT+=" --shell /bin/bash"
 
+# Show the kernel boot log (loglevel=7); vng hides it behind quiet/loglevel=1
+# otherwise. Pass --quiet after -- to override.
+if [[ " $* " != *" --quiet "* ]]; then
+    OPT+=" --verbose"
+fi
+
 echo "Running vng with options: $OPT $@"
 eval "vng $OPT $@"

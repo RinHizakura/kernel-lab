@@ -386,6 +386,16 @@ config_function_align64() {
   kbuild_enable EXPERT DEBUG_FORCE_FUNCTION_ALIGN_64B
 }
 
+# kbench's timerlat benchmark drives `rtla timerlat`, which needs the timerlat
+# tracer under /sys/kernel/tracing. FTRACE pulls in TRACING (ring buffer,
+# tracefs, tracepoint static branches); FUNCTION_TRACER stays off, so no
+# patchable function entries. Added 2026-10-22: kernels before that have no
+# tracefs at all.
+config_tracing() {
+  log "Ensuring timerlat tracer (FTRACE, TIMERLAT_TRACER)"
+  kbuild_enable FTRACE TIMERLAT_TRACER
+}
+
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
@@ -422,6 +432,7 @@ config_function_align64() {
   config_hz_1000
   config_preempt_sched
   config_function_align64
+  config_tracing
 
   # Apply any extra fragments provided by the user (e.g. syzkaller KCOV/KASAN)
   kbuild_merge_fragments

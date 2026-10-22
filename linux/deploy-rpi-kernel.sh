@@ -396,6 +396,15 @@ config_tracing() {
   kbuild_enable FTRACE TIMERLAT_TRACER
 }
 
+# arm64 defconfig ships THP in "always" mode. On the Pi 4 that is a net loss
+# for kbench: every 2MB fault zeroes 2MB at ~8GB/s (~250us), fork pays huge
+# page COW/split, khugepaged scans in the background — and nothing in the
+# suite is TLB-bound enough to earn it back.
+config_no_thp() {
+  log "Ensuring THP off (TRANSPARENT_HUGEPAGE)"
+  kbuild_disable TRANSPARENT_HUGEPAGE
+}
+
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
@@ -433,6 +442,7 @@ config_tracing() {
   config_preempt_sched
   config_function_align64
   config_tracing
+  config_no_thp
 
   # Apply any extra fragments provided by the user (e.g. syzkaller KCOV/KASAN)
   kbuild_merge_fragments

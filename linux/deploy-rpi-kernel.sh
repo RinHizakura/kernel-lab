@@ -390,20 +390,17 @@ config_function_align64() {
   kbuild_enable EXPERT DEBUG_FORCE_FUNCTION_ALIGN_64B
 }
 
-# kbench's timerlat benchmark drives `rtla timerlat`, which needs the timerlat
-# tracer under /sys/kernel/tracing. FTRACE pulls in TRACING (ring buffer,
-# tracefs, tracepoint static branches); FUNCTION_TRACER stays off, so no
-# patchable function entries. Added 2026-10-22: kernels before that have no
-# tracefs at all.
+# Enable the timerlat tracer (FTRACE, TIMERLAT_TRACER) so the suite can measure
 config_tracing() {
   log "Ensuring timerlat tracer (FTRACE, TIMERLAT_TRACER)"
   kbuild_enable FTRACE TIMERLAT_TRACER
 }
 
-# arm64 defconfig ships THP in "always" mode. On the Pi 4 that is a net loss
-# for kbench: every 2MB fault zeroes 2MB at ~8GB/s (~250us), fork pays huge
-# page COW/split, khugepaged scans in the background — and nothing in the
-# suite is TLB-bound enough to earn it back.
+# arm64 defconfig ships THP in "always" mode, which is a net win on a desktop/server
+# with lots of RAM and a TLB that can hold 2MB entries. On the Pi 4, THP is a net
+# loss: every 2MB fault zeroes 2MB at ~8GB/s (~250us), fork pays huge page COW/split,
+# khugepaged scans in the background — and nothing in the suite is TLB-bound enough
+# to earn it back.
 config_no_thp() {
   log "Ensuring THP off (TRANSPARENT_HUGEPAGE)"
   kbuild_disable TRANSPARENT_HUGEPAGE

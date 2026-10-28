@@ -49,6 +49,7 @@ DO_SWITCH=""
 DO_DELETE=""
 DO_DEFCONFIG=auto      # auto = run defconfig only if .config is missing
 DO_RT=""               # --rt: PREEMPT_RT instead of PREEMPT_LAZY
+DO_DEBUG=""            # --debug: KASAN/LOCKDEP/kmemleak bug-hunting kernel
 
 # SRC_DIR / STAGE_DIR are resolved from KSRC after argument parsing.
 
@@ -102,6 +103,8 @@ Flags:
   --localversion STR   Version suffix appended to KREL (default: $LOCALVERSION)
   --defconfig          Force 'make \$DEFCONFIG' before building (default: $DEFCONFIG)
   --rt                 Build a PREEMPT_RT (real-time) kernel instead of PREEMPT_LAZY
+  --debug              Build a bug-hunting kernel: KASAN, UBSAN_BOUNDS, DEBUG_LIST,
+                       PROVE_LOCKING, DEBUG_ATOMIC_SLEEP, KMEMLEAK
   --promote            Make the tryboot kernel permanent (new/ -> current/); skips build
   --list               Show kernels on the Pi (running, boot slots, --switch candidates,
                        un-promoted leftovers); skips build
@@ -122,6 +125,7 @@ while [ $# -gt 0 ]; do
     --localversion) LOCALVERSION="$2"; LOCALVERSION_USER=set; shift 2;;
     --defconfig)    DO_DEFCONFIG=force; shift;;
     --rt)           DO_RT=1; shift;;
+    --debug)        DO_DEBUG=1; shift;;
     --promote)      DO_PROMOTE=1; shift;;
     --list)         DO_LIST=1; shift;;
     --switch)       DO_SWITCH="$2"; shift 2;;
@@ -296,7 +300,7 @@ finalize_localversion() {
   local cfg head
   cfg="$(sha1sum "$SRC_DIR/.config" | cut -c1-8)"
   head="$(git -C "$SRC_DIR" rev-parse --short=8 HEAD 2>/dev/null || echo nogit)"
-  LOCALVERSION="${DO_RT:+-rt}-g${cfg}-${head}"
+  LOCALVERSION="${DO_DEBUG:+-debug}${DO_RT:+-rt}-g${cfg}-${head}"
   log "Auto version suffix: $LOCALVERSION (.config sha1 + git HEAD)"
 }
 
@@ -405,6 +409,23 @@ config_no_thp() {
   kbuild_disable TRANSPARENT_HUGEPAGE
 }
 
+# --debug: detectors for workload soak runs
+config_debug() {
+  if [ "$DO_DEBUG" != 1 ]; then
+    kbuild_disable KASAN UBSAN DEBUG_LIST PROVE_LOCKING LOCKDEP DEBUG_ATOMIC_SLEEP DEBUG_KMEMLEAK
+    return
+  fi
+  log "Ensuring debug detectors (KASAN, UBSAN_BOUNDS, DEBUG_LIST, PROVE_LOCKING, DEBUG_ATOMIC_SLEEP, KMEMLEAK)"
+  kbuild_enable KASAN KASAN_OUTLINE KASAN_VMALLOC UBSAN UBSAN_BOUNDS DEBUG_LIST \
+    PROVE_LOCKING DEBUG_ATOMIC_SLEEP DEBUG_KMEMLEAK
+  kbuild_disable KASAN_INLINE KASAN_STACK
+  if [ -n "$LLVM" ]; then
+    kbuild_disable KASAN_GENERIC; kbuild_enable KASAN_SW_TAGS
+  else
+    kbuild_disable KASAN_SW_TAGS; kbuild_enable KASAN_GENERIC
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
@@ -443,6 +464,7 @@ config_no_thp() {
   config_function_align64
   config_tracing
   config_no_thp
+  config_debug
 
   # Apply any extra fragments provided by the user (e.g. syzkaller KCOV/KASAN)
   kbuild_merge_fragments

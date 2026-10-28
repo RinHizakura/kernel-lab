@@ -458,7 +458,7 @@ config_no_thp() {
 
   log "Installing modules into staging dir"
   rm -rf "$STAGE_DIR"
-  kbuild_make INSTALL_MOD_PATH="$STAGE_DIR" modules_install
+  kbuild_make INSTALL_MOD_PATH="$STAGE_DIR" INSTALL_MOD_STRIP=1 modules_install
 
   # kselftests: `install` stages only the runnable artifacts (compiled binaries,
   # scripts, run_kselftest.sh) into KSELF_STAGE — no .c sources. Cross-compiling

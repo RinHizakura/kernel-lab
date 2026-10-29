@@ -31,7 +31,10 @@ Options:
                 usb-storage   USB EHCI stick backed by $USBIMG
                 ufs           UFS host controller + LU backed by $UFSIMG
               (disk images are auto-created with ext4 on first use)
-  -k          Enable kdump testing (crashkernel=256M + vmcoreinfo device).
+  -k          Enable kdump testing: crashkernel=256M + vmcoreinfo device, and
+              kexec -p the booted kernel as dump-capture kernel at shell start
+              (see kdump-shell.sh). Its initrd is kdump-initrd-<ARCH>.img in
+              the cwd, built by make_rootfs.sh on first use.
   -h          Show this help and exit.
 
 Use -- to separate extra vng arguments; everything after it is passed
@@ -41,6 +44,7 @@ Examples:
   ${0##*/} -d ufs                 # boot host kernel with a UFS device
   ${0##*/} -a arm64 -d usb-storage
   ${0##*/} -d ufs -- -r ~/linux/stable-linux   # boot a specific kernel tree
+  ${0##*/} -k -d usb-storage -- -r ~/linux/stable-linux   # kdump, /dev/sda for vmcore
 EOF
 }
 
@@ -95,8 +99,7 @@ do
             QEMU_OPTS+=$args
         ;;
         k)
-            BOOTARGS+="crashkernel=256M"
-            QEMU_OPTS+="-device vmcoreinfo"
+            KDUMP=1
         ;;
         \?)
             echo "Unknown option: -$OPTARG" >&2
@@ -115,7 +118,7 @@ shift $((OPTIND - 1))
 if [[ -n $ARCH ]]; then
     OPT+=" --arch $ARCH"
     # vng needs a foreign --root for a cross arch; default to the rootfs that
-    # make_<ARCH>_rootfs.sh builds next to this script unless one was given.
+    # make_rootfs.sh builds next to this script unless one was given.
     ROOTFS="$SCRIPT_DIR/$ARCH-rootfs"
     if [[ -d $ROOTFS && " $* " != *" --root "* ]]; then
         OPT+=" --root $ROOTFS"
@@ -125,6 +128,18 @@ if [[ -n $ARCH ]]; then
     if [[ " $* " != *" --cpus "* ]]; then
         OPT+=" --cpus 4"
     fi
+fi
+
+# kdump: the capture-kernel initrd lives in the cwd like the disk images and
+# is built on first use.
+if [[ -n $KDUMP ]]; then
+    INITRD=kdump-initrd-${ARCH:-x86_64}.img
+    if [[ ! -f $INITRD ]]; then
+        "$SCRIPT_DIR/make_rootfs.sh" "${ARCH:-x86_64}" initrd || exit 1
+    fi
+    BOOTARGS+="crashkernel=256M kdump_initrd=$(realpath "$INITRD")"
+    QEMU_OPTS+=" -device vmcoreinfo"
+    GUEST_SHELL=$SCRIPT_DIR/kdump-shell.sh
 fi
 
 # Use the locally built QEMU under install_<arch>/ if present, otherwise fall
@@ -145,7 +160,7 @@ if [[ ! -z $QEMU_OPTS ]]; then
 fi
 
 # Run vng with bash shell by default, just for faster booting
-OPT+=" --shell /bin/bash"
+OPT+=" --shell ${GUEST_SHELL:-/bin/bash}"
 
 # Show the kernel boot log (loglevel=7); vng hides it behind quiet/loglevel=1
 # otherwise. Pass --quiet after -- to override.

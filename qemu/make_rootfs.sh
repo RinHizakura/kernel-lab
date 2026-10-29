@@ -32,19 +32,12 @@ REL="${REL:-24.04}"
 JOBS="${JOBS:-$(nproc)}"
 
 # shellcheck source=../lib.sh
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib.sh"   # log/warn/die
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib.sh"   # log/warn/die, arch_name
 
-# vng --arch names are Debian arch names except x86_64. amd64 lives on the
-# main archive, everything else on ports. KARCH/CROSS are for modules_install.
-case $ARCH in
-    x86_64)  DEB_ARCH=amd64; KARCH=x86;     CROSS= ;;
-    arm64)   DEB_ARCH=arm64; KARCH=arm64;   CROSS=aarch64-linux-gnu- ;;
-    armhf)   DEB_ARCH=armhf; KARCH=arm;     CROSS=arm-linux-gnueabihf- ;;
-    riscv64) DEB_ARCH=riscv64; KARCH=riscv; CROSS=riscv64-linux-gnu- ;;
-    ppc64el) DEB_ARCH=ppc64el; KARCH=powerpc; CROSS=powerpc64le-linux-gnu- ;;
-    s390x)   DEB_ARCH=s390x; KARCH=s390;    CROSS=s390x-linux-gnu- ;;
-    *) die "unknown arch $ARCH" ;;
-esac
+DEB_ARCH=$(arch_name deb "$ARCH")
+KARCH=$(arch_name kernel "$ARCH")      # for modules_install
+CROSS=$(arch_name cross "$ARCH")
+# amd64 lives on the main archive, everything else on ports.
 if [[ $DEB_ARCH == amd64 ]]; then
     MIRROR=http://archive.ubuntu.com/ubuntu
 else

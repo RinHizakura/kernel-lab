@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./build_qemu.sh                       # latest stable tag, x86_64 target
-#   ARCH=aarch64 ./build_qemu.sh          # build_aarch64/ + install_aarch64/, target aarch64-softmmu
+#   ARCH=arm64 ./build_qemu.sh            # build_arm64/ + install_arm64/, target aarch64-softmmu
 #   REF=master ./build_qemu.sh            # build the development tip
 #   REF=v9.2.0 ./build_qemu.sh            # build a specific tag/branch/commit
 #   TARGETS=x86_64-softmmu,aarch64-softmmu ./build_qemu.sh
@@ -18,17 +18,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ARCH="${ARCH:-x86_64}"
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"   # log/warn/die, need_tools, shallow_clone, arch_name
+
+ARCH="${ARCH:-x86_64}"           # vng name; the QEMU target name comes from arch_name
 SRC_DIR="$SCRIPT_DIR/build/qemu"
 BUILD_DIR="$SCRIPT_DIR/build_$ARCH"
 PREFIX="$SCRIPT_DIR/install_$ARCH"
 REPO="${REPO:-https://gitlab.com/qemu-project/qemu.git}"
 
-TARGETS="${TARGETS:-${ARCH}-softmmu}"
+TARGETS="${TARGETS:-$(arch_name qemu "$ARCH")-softmmu}"
 JOBS="${JOBS:-$(nproc)}"
-
-# shellcheck source=../lib.sh
-source "$SCRIPT_DIR/../lib.sh"   # log/warn/die, need_tools, shallow_clone
 
 # --- dependency check (Debian/Ubuntu package names) -------------------------
 check_deps() {

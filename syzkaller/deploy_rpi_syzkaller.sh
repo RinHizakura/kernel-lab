@@ -14,8 +14,8 @@
 #
 # Required env:
 #   DEPLOY_TARGET=user@host   ssh target of the Pi (e.g. ubuntu@100.x.y.z)
-#   KSRC=/path/to/linux       arm64 kernel source tree (also used as kernel_obj
-#                             for vmlinux symbolization)
+#   KSRC=/path/to/linux       arm64 kernel source tree; its build-arm64/ is the
+#                             kernel_obj for vmlinux symbolization
 #
 # Optional env:
 #   SSHKEY=~/.ssh/id_ecdsa    private key syz-manager uses to reach the Pi
@@ -40,6 +40,11 @@ BUILD_DIR="$SCRIPT_DIR/build"
 SRC_DIR="$BUILD_DIR/syzkaller"
 FRAGMENT="${FRAGMENT:-$SCRIPT_DIR/config/kernel-syzkaller-min.config}"
 RPI_DEPLOY="$SCRIPT_DIR/../linux/deploy-rpi-kernel.sh"
+# The kernel builder as a library, for the build dir ($KOUT) the deploy
+# script will use; it also sources lib.sh.
+ARCH=arm64
+# shellcheck source=../linux/build_kernel.sh
+source "$SCRIPT_DIR/../linux/build_kernel.sh"
 
 DEPLOY_TARGET="${DEPLOY_TARGET:-}"
 KSRC="${KSRC:-}"
@@ -52,9 +57,6 @@ PROCS="${PROCS:-4}"
 # Let syz-manager hard-reboot the Pi to recover from a hang? Off by default so a
 # crash leaves the board for you to inspect; flip to true for unattended runs.
 REBOOT="${REBOOT:-false}"
-
-# shellcheck source=../lib.sh
-source "$SCRIPT_DIR/../lib.sh"   # log/warn/die
 
 [[ -n "$DEPLOY_TARGET" ]] || die "set DEPLOY_TARGET=user@host (the Pi)"
 [[ -n "$KSRC" ]]          || die "set KSRC=/path/to/arm64/linux tree"
@@ -69,7 +71,7 @@ SSH_USER="${SSH_USER:-root}"
 
 # --- build syzkaller for arm64 (shared with the QEMU path) ------------------
 stage_build() {
-    BUILD_DIR="$BUILD_DIR" TARGETARCH=arm64 "$SCRIPT_DIR/common/build_syzkaller.sh"
+    BUILD_DIR="$BUILD_DIR" TARGETARCH="$(arch_name go "$ARCH")" "$SCRIPT_DIR/common/build_syzkaller.sh"
 }
 
 # --- kernel: cross-build with the KCOV fragment merged, deploy to the Pi ----
@@ -79,23 +81,24 @@ stage_kernel() {
     # CONFIG_KCOV), and the kernel needs clang >= 15. Default LLVM=1 (unversioned
     # clang); override e.g. LLVM=-20 for the versioned clang-20 toolchain, or LLVM=
     # to fall back to CROSS_COMPILE gcc.
-    CONFIG_FRAGMENTS="$FRAGMENT" KSRC="$KSRC" ARCH=arm64 \
-        LLVM="${LLVM-1}" CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}" \
+    CONFIG_FRAGMENTS="$FRAGMENT" KSRC="$KSRC" ARCH="$ARCH" \
+        LLVM="${LLVM-1}" CROSS_COMPILE="$CROSS_COMPILE" \
         "$RPI_DEPLOY" --target "$DEPLOY_TARGET"
 }
 
 # --- config: write the isolated syz-manager config wired to the Pi ----------
 stage_config() {
     [[ -x "$SRC_DIR/bin/syz-manager" ]] || die "syz-manager not built"
-    [[ -f "$KSRC/vmlinux" ]]            || die "vmlinux not found in $KSRC (build first?)"
+    kbuild_check_tree                   # settles $KOUT
+    [[ -f "$KOUT/vmlinux" ]]            || die "vmlinux not found in $KOUT (build first?)"
 
     mkdir -p "$WORKDIR"
     cat > "$CONFIG" <<EOF
 {
-    "target": "linux/arm64",
+    "target": "linux/$(arch_name go "$ARCH")",
     "http": "$HTTP",
     "workdir": "$WORKDIR",
-    "kernel_obj": "$KSRC",
+    "kernel_obj": "$KOUT",
     "sshkey": "$SSHKEY",
     "ssh_user": "$SSH_USER",
     "syzkaller": "$SRC_DIR",

@@ -25,8 +25,7 @@ set -euo pipefail
 # Configuration (override via flags or environment)
 # ---------------------------------------------------------------------------
 : "${DEPLOY_TARGET:=pi@CHANGE-ME}"  # ssh target, e.g. pi@192.168.1.50
-: "${ARCH:=arm64}"
-: "${CROSS_COMPILE:=aarch64-linux-gnu-}"
+: "${ARCH:=arm64}"                        # CROSS_COMPILE defaults per ARCH (lib.sh)
 : "${LLVM:=}"                             # set LLVM=1 to build with clang/lld
                                           # (required for arm64 KCOV with gcc < 12)
 : "${JOBS:=$(nproc)}"
@@ -476,7 +475,7 @@ config_debug() {
   rm -rf "$KSELF_STAGE"
   kbuild_make headers
   if make -C "$SRC_DIR/tools/testing/selftests" O="$KOUT" \
-       ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} -j"$JOBS" \
+       ARCH="$(arch_name kernel "$ARCH")" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} -j"$JOBS" \
        install INSTALL_PATH="$KSELF_STAGE"; then
     log "kselftests staged -> $KSELF_STAGE"
   else
@@ -487,7 +486,7 @@ KREL="$(kbuild_make -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"
 log "Kernel release: $KREL  ->  $BOOT_DIR/new/ (tryboot slot; current/ untouched)"
 
-IMAGE="$KOUT/arch/arm64/boot/Image.gz"
+IMAGE="$(kbuild_kimg).gz"
 CONFIG_SRC="$KOUT/.config"
 SYSMAP_SRC="$KOUT/System.map"
 DTB_NAME="bcm2711-rpi-4-b.dtb"

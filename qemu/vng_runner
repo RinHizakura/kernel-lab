@@ -1,30 +1,11 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"   # die, arch_name, kernel_release
 
 USBIMG=usb.img
 UFSIMG=ufs.img
-
-# Bootable kernel image inside a kernel tree, per vng --arch (vng's kimg_path).
-function kimg_path() {
-    case $1 in
-        arm64)     echo arch/arm64/boot/Image ;;
-        riscv64)   echo arch/riscv/boot/Image ;;
-        ""|x86_64) echo arch/x86/boot/bzImage ;;
-        *)         echo "no kernel image path known for arch $1" >&2; exit 1 ;;
-    esac
-}
-
-# Map a vng --arch value to the QEMU system binary suffix.
-function qemu_suffix() {
-    case $1 in
-        arm64)   echo aarch64 ;;
-        armhf)   echo arm     ;;
-        ppc64el) echo ppc64    ;;
-        ""|x86_64) echo x86_64 ;;
-        *)       echo "$1"    ;;   # s390x, riscv64, ... match directly
-    esac
-}
 
 function usage() {
     cat <<EOF
@@ -108,8 +89,7 @@ do
         d)
             args=`devargs $OPTARG`
             if [ -z "$args" ]; then
-                echo "Invalid device option $OPTARG"
-                exit 1
+                die "Invalid device option $OPTARG"
             fi
             QEMU_OPTS+=$args
         ;;
@@ -140,7 +120,7 @@ if [[ -n $ARCH ]]; then
     # modules in step with the kernel in KDIR.
     ROOTFS="$SCRIPT_DIR/$ARCH-rootfs"
     if [[ " $* " != *" --root "* ]]; then
-        KREL=$(cat "$KDIR/include/config/kernel.release" 2>/dev/null)
+        KREL=$(kernel_release "$KDIR")
         if [[ ! -d $ROOTFS ]]; then
             KSRC=$KDIR DEST=$ROOTFS "$SCRIPT_DIR/make_rootfs.sh" "$ARCH" rootfs || exit 1
         elif [[ -n $KREL && ! -d $ROOTFS/lib/modules/$KREL ]]; then
@@ -158,7 +138,7 @@ fi
 # kdump: the capture-kernel initrd lives next to the kernel image in KDIR
 # and is built on first use.
 if [[ -n $KDUMP ]]; then
-    KIMG=$KDIR/$(kimg_path "$ARCH") || exit 1
+    KIMG=$KDIR/$(arch_name kimg "${ARCH:-x86_64}") || exit 1
     INITRD=$KDIR/kdump-initrd-${ARCH:-x86_64}.img
     if [[ ! -f $INITRD ]]; then
         OUT=$INITRD "$SCRIPT_DIR/make_rootfs.sh" "${ARCH:-x86_64}" initrd || exit 1
@@ -181,8 +161,7 @@ fi
 
 # Use the locally built QEMU under install_<arch>/ if present, otherwise fall
 # back to the system QEMU that vng picks by default.
-QEMU_ARCH="$(qemu_suffix "$ARCH")"
-QEMU_BIN="$SCRIPT_DIR/install_$QEMU_ARCH/bin/qemu-system-$QEMU_ARCH"
+QEMU_BIN="$SCRIPT_DIR/install_${ARCH:-x86_64}/bin/qemu-system-$(arch_name qemu "${ARCH:-x86_64}")" || exit 1
 if [[ -x $QEMU_BIN ]]; then
     echo "Using local QEMU: $QEMU_BIN"
     OPT+=(--qemu "$QEMU_BIN")

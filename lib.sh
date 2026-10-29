@@ -35,3 +35,49 @@ shallow_clone() {
     git -C "$dir" fetch -q --depth 1 origin "$ref" || die "fetch of $ref failed"
     git -C "$dir" checkout -q --detach FETCH_HEAD
 }
+
+# ARCH is always the vng --arch name: x86_64 arm64 riscv64 armhf ppc64el s390x.
+# arch_name SCHEME ARCH gives that arch's spelling in another scheme:
+#   kernel  make ARCH=              cross  toolchain prefix (empty = native)
+#   deb     Debian/Ubuntu arch       qemu   qemu-system-<x>
+#   go      GOARCH                   kimg   bootable image inside a kernel tree
+arch_name() {
+    local scheme=$1 arch=$2 row
+    case $arch in
+        x86_64)  row="x86_64 - amd64 x86_64 amd64 arch/x86/boot/bzImage" ;;
+        arm64)   row="arm64 aarch64-linux-gnu- arm64 aarch64 arm64 arch/arm64/boot/Image" ;;
+        riscv64) row="riscv riscv64-linux-gnu- riscv64 riscv64 riscv64 arch/riscv/boot/Image" ;;
+        armhf)   row="arm arm-linux-gnueabihf- armhf arm arm arch/arm/boot/zImage" ;;
+        ppc64el) row="powerpc powerpc64le-linux-gnu- ppc64el ppc64 ppc64le vmlinux" ;;
+        s390x)   row="s390 s390x-linux-gnu- s390x s390x s390x arch/s390/boot/bzImage" ;;
+        *) die "unknown arch '$arch' (one of: x86_64 arm64 riscv64 armhf ppc64el s390x)" ;;
+    esac
+    # shellcheck disable=SC2086
+    set -- $row
+    case $scheme in
+        kernel) echo "$1" ;;
+        cross)  [[ $2 == - ]] || echo "$2" ;;
+        deb)    echo "$3" ;;
+        qemu)   echo "$4" ;;
+        go)     echo "$5" ;;
+        kimg)   echo "$6" ;;
+        *) die "arch_name: unknown scheme '$scheme'" ;;
+    esac
+}
+
+# host_arch: the vng name of the machine this runs on.
+host_arch() {
+    case $(uname -m) in
+        x86_64)  echo x86_64 ;;
+        aarch64) echo arm64 ;;
+        riscv64) echo riscv64 ;;
+        armv7l)  echo armhf ;;
+        ppc64le) echo ppc64el ;;
+        s390x)   echo s390x ;;
+        *) die "unsupported host architecture: $(uname -m)" ;;
+    esac
+}
+
+# kernel_release KDIR: the release string of the kernel built in KDIR, empty
+# if nothing has been built there yet.
+kernel_release() { cat "$1/include/config/kernel.release" 2>/dev/null || true; }

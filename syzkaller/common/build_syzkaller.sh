@@ -9,7 +9,7 @@
 #
 # Env knobs:
 #   REF=master                     syzkaller tag/commit to build
-#   TARGETARCH=amd64               target bits (arm64 for a Pi board)
+#   TARGETARCH=<host>              GOARCH to build for (arm64 for a Pi board)
 #
 set -euo pipefail
 
@@ -19,19 +19,9 @@ SRC_DIR="$BUILD_DIR/syzkaller"
 GOROOT="/usr/local/go"
 REPO="https://github.com/google/syzkaller.git"
 REF="${REF:-master}"
-TARGETARCH="${TARGETARCH:-amd64}"
-
 # shellcheck source=../../lib.sh
-source "$SCRIPT_DIR/../../lib.sh"   # log/warn/die, need_tools, shallow_clone
-
-# Map `uname -m` onto Go's release arch naming.
-go_arch() {
-    case "$(uname -m)" in
-        x86_64|amd64)   echo amd64 ;;
-        aarch64|arm64)  echo arm64 ;;
-        *) die "unsupported architecture: $(uname -m)" ;;
-    esac
-}
+source "$SCRIPT_DIR/../../lib.sh"   # log/warn/die, need_tools, shallow_clone, arch_name, host_arch
+TARGETARCH="${TARGETARCH:-$(arch_name go "$(host_arch)")}"
 
 # --- toolchain check (Debian/Ubuntu package names) --------------------------
 check_deps() { need_tools curl tar git gcc:build-essential make; }
@@ -42,7 +32,7 @@ install_go() {
     log "Querying latest stable Go version"
     version="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n1)" \
         || die "failed to query latest Go version"
-    arch="$(go_arch)"
+    arch="$(arch_name go "$(host_arch)")"
     tarball="${version}.linux-${arch}.tar.gz"
     url="https://go.dev/dl/${tarball}"
     [[ -w /usr/local ]] || SUDO="sudo"

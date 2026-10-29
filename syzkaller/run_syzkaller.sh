@@ -25,12 +25,11 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/build/syzkaller"
 CONFIG="${CONFIG:-$SCRIPT_DIR/build/config.cfg}"
-QEMU_BIN_DIR="$SCRIPT_DIR/../qemu/install_x86_64/bin"
 
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"   # log/warn/die
 
-[[ -f "$CONFIG" ]] || die "config not found: $CONFIG; run ./5-gen_config.sh"
+[[ -f "$CONFIG" ]] || die "config not found: $CONFIG; run ./deploy_qemu_syzkaller.sh or ./deploy_rpi_syzkaller.sh"
 
 # workdir/crashes live where config.cfg points (fallback to the default layout).
 WORKDIR="$(command -v jq >/dev/null && jq -er '.workdir' "$CONFIG" 2>/dev/null || echo "$SCRIPT_DIR/build/workdir")"
@@ -117,8 +116,13 @@ cmd_clean() {
 }
 
 cmd_run() {
-    [[ -x "$SRC_DIR/bin/syz-manager" ]] || die "syz-manager not built; run ./2-build_syzkaller.sh"
-    [[ -d "$QEMU_BIN_DIR" ]] && export PATH="$QEMU_BIN_DIR:$PATH"
+    [[ -x "$SRC_DIR/bin/syz-manager" ]] || die "syz-manager not built; run ./common/build_syzkaller.sh"
+    # Prefer the locally built QEMUs (qemu/build_qemu.sh), whatever the arch.
+    local d
+    for d in "$SCRIPT_DIR"/../qemu/install_*/bin; do
+        [[ -d "$d" ]] && PATH="$d:$PATH"
+    done
+    export PATH
 
     # Preflight: for isolated targets, syz-manager silently retries when SSH
     # fails (e.g. Tailscale SSH wanting browser re-auth). Fail loudly instead.

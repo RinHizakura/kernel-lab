@@ -6,8 +6,10 @@
 # reuse .config if present (else DEFCONFIG), merge CONFIG_FRAGMENTS via
 # merge_config.sh, reconcile with `make olddefconfig`, build the arch image.
 #
-# Builds are out-of-tree (make O=KOUT, default $KSRC/build-$ARCH): the source
-# tree stays clean and one tree serves several archs/configs side by side.
+# Builds are out-of-tree (make O=KOUT, default $KSRC/$BUILD_NAME, i.e.
+# build-$ARCH): the source tree stays clean and one tree serves several
+# archs/configs side by side. ARCH is the vng name (x86_64, arm64, riscv64,
+# ...); the kernel's own spelling and the cross prefix come from lib.sh.
 # A tree with an in-tree build (.config in KSRC) is refused; save its .config
 # and `make mrproper` once.
 #
@@ -16,11 +18,12 @@
 #   KSRC=/path/to/linux ./build_kernel.sh               # existing tree, no clone
 #   KERNEL_BRANCH=linux-6.6.y ./build_kernel.sh
 #   KERNEL_REPO=https://.../torvalds/linux.git ./build_kernel.sh
-#   ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ./build_kernel.sh
+#   ARCH=arm64 ./build_kernel.sh                        # CROSS_COMPILE defaults per ARCH
 #   LLVM=1 ./build_kernel.sh                            # clang/lld
 #   CONFIG_FRAGMENTS="/path/a.config /path/b.config" ./build_kernel.sh
 #   BUILD_DIR=/somewhere/else ./build_kernel.sh
-#   KOUT=/path/to/objdir ./build_kernel.sh              # O= dir (default $KSRC/build-$ARCH)
+#   BUILD_NAME=build-foo ./build_kernel.sh              # O= dir name under KSRC (default build-$ARCH)
+#   KOUT=/path/to/objdir ./build_kernel.sh              # O= dir, anywhere
 #
 # Library (set your own defaults BEFORE sourcing, they win):
 #   source build_kernel.sh
@@ -30,6 +33,8 @@
 #   kbuild_merge_fragments           # $CONFIG_FRAGMENTS on top of .config (no olddefconfig)
 #   kbuild_make olddefconfig bzImage
 #   KBUILD_SUDO=sudo kbuild_make modules_install
+#   kbuild_kimg                      # $KOUT/<bootable image for ARCH>
+#   kbuild_main                      # the standalone flow (clone/config/build)
 #
 set -euo pipefail
 
@@ -37,12 +42,13 @@ set -euo pipefail
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib.sh"   # log/warn/die, need_tools, shallow_clone
 
 : "${KSRC:=}"                     # existing kernel tree; empty = clone into BUILD_DIR/linux
-: "${KOUT:=}"                     # O= build dir; empty = $KSRC/build-$ARCH (set by kbuild_check_tree)
 : "${BUILD_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build}"
 : "${KERNEL_REPO:=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git}"
 : "${KERNEL_BRANCH:=master}"
 : "${ARCH:=x86_64}"
-: "${CROSS_COMPILE:=}"
+: "${BUILD_NAME:=build-$ARCH}"    # O= dir name under KSRC
+: "${KOUT:=}"                     # O= build dir; empty = $KSRC/$BUILD_NAME (set by kbuild_check_tree)
+: "${CROSS_COMPILE:=$(arch_name cross "$ARCH")}"
 : "${LLVM:=}"                     # LLVM=1 -> clang, LLVM=-15 -> clang-15
 : "${JOBS:=$(nproc)}"
 : "${DEFCONFIG:=defconfig}"
@@ -66,21 +72,24 @@ kbuild_check_tree() {
     if [[ -e "$KSRC/.config" || -d "$KSRC/include/config" ]]; then
         die "$KSRC has an in-tree build; builds are out-of-tree now. Once:
     cp $KSRC/.config /somewhere/safe && make -C $KSRC mrproper
-    then put that .config in \$KOUT (default $KSRC/build-$ARCH)"
+    then put that .config in \$KOUT (default $KSRC/$BUILD_NAME)"
     fi
-    : "${KOUT:=$KSRC/build-$ARCH}"
+    : "${KOUT:=$KSRC/$BUILD_NAME}"
     mkdir -p "$KOUT"
     KOUT=$(cd "$KOUT" && pwd)
 }
 
 # make in $KSRC with the arch/toolchain/version vars. KBUILD_SUDO=sudo to escalate.
 kbuild_make() {
-    local args=(-C "$KSRC" O="$KOUT" ARCH="$ARCH" -j"$JOBS")
+    local args=(-C "$KSRC" O="$KOUT" ARCH="$(arch_name kernel "$ARCH")" -j"$JOBS")
     [[ -n "$CROSS_COMPILE" ]] && args+=(CROSS_COMPILE="$CROSS_COMPILE")
     [[ -n "$LLVM" ]] && args+=(LLVM="$LLVM")
     [[ -n "${LOCALVERSION+x}" ]] && args+=(LOCALVERSION="$LOCALVERSION")
     ${KBUILD_SUDO:-} make "${args[@]}" "$@"
 }
+
+# The bootable image of this build (bzImage / Image / vmlinux ...).
+kbuild_kimg() { echo "$KOUT/$(arch_name kimg "$ARCH")"; }
 
 # .config setters (scripts/config). Run `kbuild_make olddefconfig` afterwards so
 # dependencies resolve.
@@ -109,12 +118,9 @@ kbuild_clone() {
     shallow_clone "$KERNEL_REPO" "$KERNEL_BRANCH" "$KSRC"
 }
 
-main() {
-    case "$ARCH" in
-        x86_64) IMG_TARGET="bzImage modules" ;;
-        arm64)  IMG_TARGET="Image modules dtbs" ;;
-        *)      IMG_TARGET="vmlinux modules" ;;
-    esac
+kbuild_main() {
+    IMG_TARGET="$(basename "$(arch_name kimg "$ARCH")") modules"
+    case "$ARCH" in arm64|armhf|riscv64) IMG_TARGET+=" dtbs" ;; esac
 
     kbuild_check_tools
     kbuild_check_fragments   # fail before the long clone/build
@@ -149,4 +155,4 @@ main() {
 
 # Sourced: expose the helpers only.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
-main "$@"
+kbuild_main "$@"

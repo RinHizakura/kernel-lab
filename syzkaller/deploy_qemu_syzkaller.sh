@@ -11,7 +11,7 @@
 #   config               write the syz-manager (qemu) config.cfg
 #
 # Env knobs flow through to each stage:
-#   kernel : KERNEL_REPO KERNEL_BRANCH ARCH CROSS_COMPILE
+#   kernel : KSRC (else a clone under build/linux) KERNEL_REPO KERNEL_BRANCH ARCH CROSS_COMPILE
 #   image  : RELEASE (debian suite, default bullseye)
 #   config : TARGET HTTP WORKDIR CONFIG VMS PROCS CPU MEM CMDLINE QEMU
 #
@@ -22,13 +22,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 SRC_DIR="$BUILD_DIR/syzkaller"
-KERNEL="$BUILD_DIR/linux"
 IMG_DIR="$BUILD_DIR/image"
 FRAGMENT="$SCRIPT_DIR/config/kernel-syzkaller.config"
-BUILDER="$SCRIPT_DIR/../linux/build_kernel.sh"
+# The kernel builder as a library: kbuild_main builds (cloning into
+# $BUILD_DIR/linux unless KSRC is set), then $KOUT and kbuild_kimg say where
+# the artifacts are. It also sources lib.sh.
+# shellcheck source=../linux/build_kernel.sh
+source "$SCRIPT_DIR/../linux/build_kernel.sh"
 
 RELEASE="${RELEASE:-bullseye}"
-TARGET="${TARGET:-linux/amd64}"
+TARGET="${TARGET:-linux/$(arch_name go "$ARCH")}"
 HTTP="${HTTP:-127.0.0.1:56741}"
 WORKDIR="${WORKDIR:-$BUILD_DIR/workdir}"
 CONFIG="${CONFIG:-$BUILD_DIR/config.cfg}"
@@ -40,19 +43,16 @@ MEM="${MEM:-2048}"
 # matches; otherwise udev renames it, ifup fails and syz-manager can't SSH in.
 CMDLINE="${CMDLINE:-net.ifnames=0}"
 # Prefer a locally built QEMU; fall back to PATH.
-QEMU="${QEMU:-$SCRIPT_DIR/../qemu/install_x86_64/bin/qemu-system-x86_64}"
+QEMU_SYSTEM="qemu-system-$(arch_name qemu "$ARCH")"
+QEMU="${QEMU:-$SCRIPT_DIR/../qemu/install_$ARCH/bin/$QEMU_SYSTEM}"
 
 GOROOT="/usr/local/go"
 export PATH="$GOROOT/bin:$PATH"
 
-# shellcheck source=../lib.sh
-source "$SCRIPT_DIR/../lib.sh"   # log/warn/die, need_tools
-
 # --- kernel: merge syzkaller's fragment on top of defconfig, build ----------
 stage_kernel() {
-    [[ -x "$BUILDER" ]]  || die "generic kernel builder not found: $BUILDER"
     [[ -f "$FRAGMENT" ]] || die "syzkaller config fragment missing: $FRAGMENT"
-    BUILD_DIR="$BUILD_DIR" CONFIG_FRAGMENTS="$FRAGMENT" "$BUILDER"
+    CONFIG_FRAGMENTS="$FRAGMENT" kbuild_main
 }
 
 # --- image: debootstrap an SSH-able rootfs via syzkaller's own tool ----------
@@ -69,9 +69,9 @@ stage_image() {
 # --- config: write syz-manager config.cfg wired to the artifacts above ------
 stage_config() {
     [[ -x "$SRC_DIR/bin/syz-manager" ]] || die "syz-manager not built"
-    [[ -f "$KERNEL/vmlinux" ]]          || die "vmlinux not found in $KERNEL"
-    local bzimage="$KERNEL/arch/x86/boot/bzImage"
-    [[ -f "$bzimage" ]]                 || die "bzImage not found: $bzimage"
+    [[ -f "$KOUT/vmlinux" ]]            || die "vmlinux not found in $KOUT"
+    local bzimage; bzimage="$(kbuild_kimg)"
+    [[ -f "$bzimage" ]]                 || die "kernel image not found: $bzimage"
     [[ -f "$IMG_DIR/$RELEASE.img" ]]    || die "image not found; image stage failed?"
     [[ -f "$IMG_DIR/$RELEASE.id_rsa" ]] || die "ssh key not found: $IMG_DIR/$RELEASE.id_rsa"
 
@@ -80,7 +80,7 @@ stage_config() {
     if [[ -x "$QEMU" ]]; then
         qemu_line="        \"qemu\": \"$QEMU\","
     else
-        log "warning: $QEMU not executable; relying on PATH qemu-system-x86_64"
+        warn "$QEMU not executable; relying on PATH $QEMU_SYSTEM"
     fi
 
     mkdir -p "$WORKDIR"
@@ -89,7 +89,7 @@ stage_config() {
     "target": "$TARGET",
     "http": "$HTTP",
     "workdir": "$WORKDIR",
-    "kernel_obj": "$KERNEL",
+    "kernel_obj": "$KOUT",
     "image": "$IMG_DIR/$RELEASE.img",
     "sshkey": "$IMG_DIR/$RELEASE.id_rsa",
     "syzkaller": "$SRC_DIR",
@@ -111,7 +111,7 @@ EOF
 
 main() {
     log "starting stage: build_syzkaller"
-    BUILD_DIR="$BUILD_DIR" "$SCRIPT_DIR/common/build_syzkaller.sh"
+    BUILD_DIR="$BUILD_DIR" TARGETARCH="$(arch_name go "$ARCH")" "$SCRIPT_DIR/common/build_syzkaller.sh"
     log "starting stage: kernel"
     stage_kernel
     log "starting stage: image"

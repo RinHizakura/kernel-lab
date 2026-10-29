@@ -5,13 +5,7 @@
 
 karg() { grep -oE "(^| )$1=[^ ]+" /proc/cmdline | cut -d= -f2-; }
 
-case $(uname -m) in
-    x86_64)  REL=arch/x86/boot/bzImage ;;
-    aarch64) REL=arch/arm64/boot/Image ;;
-esac
-KVER=$(uname -r)
-KDIR=$(readlink -f "/lib/modules/$KVER")   # vng -r: <kdir>/.virtme_mods/lib/modules/<kver>
-IMG=${KDIR%%/.virtme_mods/*}/$REL
+IMG=$(karg kdump_kernel)
 INITRD=$(karg kdump_initrd)
 # Reuse the console= the running kernel got from vng (ttyS0/ttyAMA0/hvc0...).
 CONSOLE=$(grep -oE 'console=[^ ]+' /proc/cmdline | tr '\n' ' ')

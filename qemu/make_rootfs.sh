@@ -4,7 +4,8 @@
 # vng supports. No root, no chroot, no qemu-user, nothing compiled.
 #
 #   rootfs  minimal Ubuntu rootfs for `vng --root`: base tarball + a few debs
-#           unpacked with dpkg-deb, plus the stubs vng's init expects
+#           (busybox, kexec) unpacked with dpkg-deb, plus the stubs vng's
+#           init expects
 #   initrd  busybox-static repacked as a newc cpio, used as the dump-capture
 #           kernel's initrd by `vng_runner -k`
 #
@@ -74,7 +75,7 @@ make_rootfs() {
     local dest tarball
     dest="$(realpath -m "${DEST:-./$ARCH-rootfs}")"
     # Packages unpacked on top of the base image.
-    local debs="busybox-static"
+    local debs="busybox-static kexec-tools"
     # busybox applets that vng's guest init / typical kernel testing expects.
     local applets="poweroff reboot halt ip modprobe insmod rmmod depmod lsmod deallocvt"
 

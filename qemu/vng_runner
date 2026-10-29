@@ -5,6 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USBIMG=usb.img
 UFSIMG=ufs.img
 
+# Bootable kernel image inside a kernel tree, per vng --arch (vng's kimg_path).
+function kimg_path() {
+    case $1 in
+        arm64)     echo arch/arm64/boot/Image ;;
+        riscv64)   echo arch/riscv/boot/Image ;;
+        ""|x86_64) echo arch/x86/boot/bzImage ;;
+        *)         echo "no kernel image path known for arch $1" >&2; exit 1 ;;
+    esac
+}
+
 # Map a vng --arch value to the QEMU system binary suffix.
 function qemu_suffix() {
     case $1 in
@@ -18,7 +28,7 @@ function qemu_suffix() {
 
 function usage() {
     cat <<EOF
-Usage: ${0##*/} [-h] [-a ARCH] [-d DEVICE] [-k] [-- VNG_ARGS...]
+Usage: ${0##*/} [-h] [-a ARCH] [-r KDIR] [-d DEVICE] [-k] [-- VNG_ARGS...]
 
 Thin wrapper around vng (virtme-ng) that attaches extra QEMU devices and
 auto-selects the locally built QEMU under install_<arch>/bin if present.
@@ -27,11 +37,12 @@ Options:
   -a ARCH     Target architecture passed to vng --arch (e.g. arm64, riscv64).
               Also selects install_<arch>/bin/qemu-system-<arch> when available
               and defaults --root to <arch>-rootfs/ next to this script.
+  -r KDIR     Kernel tree to boot (default: the cwd).
   -d DEVICE   Attach a storage device. Supported:
                 usb-storage   USB EHCI stick backed by $USBIMG
                 ufs           UFS host controller + LU backed by $UFSIMG
               (disk images are auto-created with ext4 on first use)
-  -k          Enable kdump testing: crashkernel=256M + vmcoreinfo device, and
+  -k          Enable kdump testing: crashkernel=512M, 4G guest, vmcoreinfo, and
               kexec -p the booted kernel as dump-capture kernel at shell start
               (see kdump-shell.sh). Its initrd is kdump-initrd-<ARCH>.img in
               the cwd, built by make_rootfs.sh on first use.
@@ -43,8 +54,8 @@ straight through to vng untouched.
 Examples:
   ${0##*/} -d ufs                 # boot host kernel with a UFS device
   ${0##*/} -a arm64 -d usb-storage
-  ${0##*/} -d ufs -- -r ~/linux/stable-linux   # boot a specific kernel tree
-  ${0##*/} -k -d usb-storage -- -r ~/linux/stable-linux   # kdump, /dev/sda for vmcore
+  ${0##*/} -r ~/linux/stable-linux -d ufs      # boot a specific kernel tree
+  ${0##*/} -r ~/linux/stable-linux -k -d usb-storage   # kdump, /dev/sda for vmcore
 EOF
 }
 
@@ -80,7 +91,8 @@ OPTS=
 QEMU_OPTS=
 BOOTARGS=
 ARCH=
-while getopts ":hka:d:" opt
+KDIR=.
+while getopts ":hka:r:d:" opt
 do
     case $opt in
         h)
@@ -89,6 +101,9 @@ do
         ;;
         a)
             ARCH=$OPTARG
+        ;;
+        r)
+            KDIR=$OPTARG
         ;;
         d)
             args=`devargs $OPTARG`
@@ -115,6 +130,9 @@ do
 done
 shift $((OPTIND - 1))
 
+KDIR=$(realpath "$KDIR") || exit 1
+OPT+=" -r $KDIR"
+
 if [[ -n $ARCH ]]; then
     OPT+=" --arch $ARCH"
     # vng needs a foreign --root for a cross arch; default to the rootfs that
@@ -133,13 +151,28 @@ fi
 # kdump: the capture-kernel initrd lives in the cwd like the disk images and
 # is built on first use.
 if [[ -n $KDUMP ]]; then
+    KIMG=$KDIR/$(kimg_path "$ARCH") || exit 1
     INITRD=kdump-initrd-${ARCH:-x86_64}.img
     if [[ ! -f $INITRD ]]; then
         "$SCRIPT_DIR/make_rootfs.sh" "${ARCH:-x86_64}" initrd || exit 1
     fi
-    BOOTARGS+="crashkernel=256M kdump_initrd=$(realpath "$INITRD")"
+    INITRD=$(realpath "$INITRD")
+    # kexec -p reads the whole Image into memory and the capture kernel has
+    # to boot inside crashkernel=; a debug (KASAN) Image is ~150M, so both
+    # the guest and the reservation need room. Override with --memory after --.
+    BOOTARGS+="crashkernel=512M kdump_kernel=$KIMG kdump_initrd=$INITRD"
     QEMU_OPTS+=" -device vmcoreinfo"
+    if [[ " $* " != *" --memory "* ]]; then
+        OPT+=" --memory 4G"
+    fi
     GUEST_SHELL=$SCRIPT_DIR/kdump-shell.sh
+    # A cross-arch guest boots its own --root and cannot see the host: share
+    # what kdump-shell.sh needs (kexec itself comes from the rootfs).
+    if [[ -n $ARCH ]]; then
+        for d in $(printf '%s\n' "$SCRIPT_DIR" "$KDIR" "${INITRD%/*}" | sort -u); do
+            OPT+=" --rodir=$d=$d"
+        done
+    fi
 fi
 
 # Use the locally built QEMU under install_<arch>/ if present, otherwise fall

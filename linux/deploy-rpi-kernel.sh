@@ -42,6 +42,7 @@ LOCALVERSION_USER="${LOCALVERSION+set}"
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=build_kernel.sh
 source "$SCRIPT_DIR/build_kernel.sh"   # log/warn/die, kbuild_*
+CONFIG_FRAGMENTS="$SCRIPT_DIR/config/kdump.config${CONFIG_FRAGMENTS:+ $CONFIG_FRAGMENTS}"
 
 DO_PROMOTE=0
 DO_LIST=0
@@ -351,18 +352,6 @@ config_wifi() {
     FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD
 }
 
-# The same build is also booted under QEMU with virtme-ng
-# (qemu/vng_runner -a arm64 -r $KOUT). vng passes no initramfs when given --root, so
-# the 9p root, the overlay it stacks on top and virtiofs/FUSE must be built
-# in (=y), not modules. Harmless on the Pi: a few extra built-in filesystems.
-config_vng_qemu() {
-  log "Ensuring virtme-ng/QEMU root filesystems are built in (=y)"
-  kbuild_enable \
-    NET_9P NET_9P_VIRTIO 9P_FS \
-    OVERLAY_FS \
-    FUSE_FS VIRTIO_FS
-}
-
 config_hz_1000() {
   log "Ensuring HZ=1000"
   kbuild_disable HZ_250
@@ -456,7 +445,6 @@ config_debug() {
   # Apply extra config tweaks
   config_tailscale
   config_wifi
-  config_vng_qemu
   config_hz_1000
   config_preempt_sched
   config_function_align64

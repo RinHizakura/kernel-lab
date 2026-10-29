@@ -135,10 +135,17 @@ OPT+=(-r "$KDIR")
 
 if [[ -n $ARCH ]]; then
     OPT+=(--arch "$ARCH")
-    # vng needs a foreign --root for a cross arch; default to the rootfs that
-    # make_rootfs.sh builds next to this script unless one was given.
+    # vng needs a foreign --root for a cross arch: use the rootfs next to this
+    # script unless one was given, building it on first use and keeping its
+    # modules in step with the kernel in KDIR.
     ROOTFS="$SCRIPT_DIR/$ARCH-rootfs"
-    if [[ -d $ROOTFS && " $* " != *" --root "* ]]; then
+    if [[ " $* " != *" --root "* ]]; then
+        KREL=$(cat "$KDIR/include/config/kernel.release" 2>/dev/null)
+        if [[ ! -d $ROOTFS ]]; then
+            KSRC=$KDIR DEST=$ROOTFS "$SCRIPT_DIR/make_rootfs.sh" "$ARCH" rootfs || exit 1
+        elif [[ -n $KREL && ! -d $ROOTFS/lib/modules/$KREL ]]; then
+            KSRC=$KDIR DEST=$ROOTFS "$SCRIPT_DIR/make_rootfs.sh" "$ARCH" modules || exit 1
+        fi
         OPT+=(--root "$ROOTFS")
     fi
     # A cross arch runs under TCG; vng's default of one vCPU per host core

@@ -5,19 +5,21 @@
 #
 #   rootfs  minimal Ubuntu rootfs for `vng --root`: base tarball + a few debs
 #           (busybox, kexec) unpacked with dpkg-deb, plus the stubs vng's
-#           init expects
+#           init expects; with KSRC also the kernel's modules
+#   modules only `make modules_install` from KSRC into an existing DEST
 #   initrd  busybox-static repacked as a newc cpio, used as the dump-capture
 #           kernel's initrd by `vng_runner -k`
 #
 # Usage:
-#   ./make_rootfs.sh ARCH [rootfs|initrd]        # ARCH as vng --arch: arm64, riscv64, x86_64...
-#   KSRC=~/linux/stable-linux ./make_rootfs.sh arm64
+#   ./make_rootfs.sh ARCH [rootfs|modules|initrd]   # ARCH as vng --arch: arm64, riscv64, x86_64...
+#   KSRC=~/linux/stable-linux/build-arm64 ./make_rootfs.sh arm64
+#   KSRC=~/linux/stable-linux/build-arm64 ./make_rootfs.sh arm64 modules
 #   OUT=/path/x.img ./make_rootfs.sh riscv64 initrd
 #
 #   REL    Ubuntu release (default 24.04); CODENAME is derived from REL
-#   rootfs:
+#   rootfs / modules:
 #   DEST   target directory (default ./<ARCH>-rootfs, relative to the cwd)
-#   KSRC   kernel tree; if set, runs `make modules_install` into DEST
+#   KSRC   kernel tree or O= build dir to take the modules from
 #   CROSS_COMPILE  toolchain prefix for modules_install (default per ARCH)
 #   initrd:
 #   OUT    output file (default ./kdump-initrd-<ARCH>.img, relative to the cwd)
@@ -69,6 +71,15 @@ fetch_deb() {
     curl -sSfL -o "$TMP/$pkg.deb" "$MIRROR/$file"
     mkdir -p "$dir"
     dpkg-deb -x "$TMP/$pkg.deb" "$dir"
+}
+
+# install_modules DEST: `make modules_install` from KSRC (a tree or an O= dir).
+# The rootfs serves one kernel at a time, so older module trees are dropped.
+install_modules() {
+    msg "Installing modules from $KSRC"
+    rm -rf "$1/lib/modules"
+    make -C "$KSRC" ARCH="$KARCH" CROSS_COMPILE="${CROSS_COMPILE:-$CROSS}" -j"$JOBS" \
+        INSTALL_MOD_PATH="$1" INSTALL_MOD_STRIP=1 modules_install
 }
 
 make_rootfs() {
@@ -126,9 +137,7 @@ STUB
     chmod +x "$dest/usr/lib/systemd/systemd-udevd" "$dest/usr/bin/udevadm"
 
     if [[ -n ${KSRC:-} ]]; then
-        msg "Installing modules from $KSRC"
-        make -C "$KSRC" ARCH="$KARCH" CROSS_COMPILE="${CROSS_COMPILE:-$CROSS}" -j"$JOBS" \
-            INSTALL_MOD_PATH="$dest" modules_install
+        install_modules "$dest"
     else
         # Still boots: vng passes no initramfs for --root, so 9p/overlay must
         # be built into the kernel anyway. Only modprobe inside the guest is
@@ -187,6 +196,9 @@ RCS
 
 case $MODE in
     rootfs) make_rootfs ;;
+    modules)
+        [[ -n ${KSRC:-} ]] || die "modules mode needs KSRC"
+        install_modules "$(realpath -m "${DEST:-./$ARCH-rootfs}")" ;;
     initrd) make_initrd ;;
-    *) die "unknown mode $MODE (rootfs|initrd)" ;;
+    *) die "unknown mode $MODE (rootfs|modules|initrd)" ;;
 esac

@@ -6,6 +6,11 @@
 # reuse .config if present (else DEFCONFIG), merge CONFIG_FRAGMENTS via
 # merge_config.sh, reconcile with `make olddefconfig`, build the arch image.
 #
+# Builds are out-of-tree (make O=KOUT, default $KSRC/build-$ARCH): the source
+# tree stays clean and one tree serves several archs/configs side by side.
+# A tree with an in-tree build (.config in KSRC) is refused; save its .config
+# and `make mrproper` once.
+#
 # Usage:
 #   ./build_kernel.sh                                   # stable tree, master
 #   KSRC=/path/to/linux ./build_kernel.sh               # existing tree, no clone
@@ -15,12 +20,13 @@
 #   LLVM=1 ./build_kernel.sh                            # clang/lld
 #   CONFIG_FRAGMENTS="/path/a.config /path/b.config" ./build_kernel.sh
 #   BUILD_DIR=/somewhere/else ./build_kernel.sh
+#   KOUT=/path/to/objdir ./build_kernel.sh              # O= dir (default $KSRC/build-$ARCH)
 #
 # Library (set your own defaults BEFORE sourcing, they win):
 #   source build_kernel.sh
-#   kbuild_check_tools; kbuild_check_tree
-#   kbuild_make defconfig            # make -C $KSRC ARCH=.. CROSS_COMPILE=.. LLVM=.. LOCALVERSION=.. -jN
-#   kbuild_enable FOO BAR; kbuild_disable BAZ   # scripts/config on $KSRC/.config
+#   kbuild_check_tools; kbuild_check_tree       # check_tree also settles $KOUT
+#   kbuild_make defconfig            # make -C $KSRC O=$KOUT ARCH=.. CROSS_COMPILE=.. LLVM=.. LOCALVERSION=.. -jN
+#   kbuild_enable FOO BAR; kbuild_disable BAZ   # scripts/config on $KOUT/.config
 #   kbuild_merge_fragments           # $CONFIG_FRAGMENTS on top of .config (no olddefconfig)
 #   kbuild_make olddefconfig bzImage
 #   KBUILD_SUDO=sudo kbuild_make modules_install
@@ -28,6 +34,7 @@
 set -euo pipefail
 
 : "${KSRC:=}"                     # existing kernel tree; empty = clone into BUILD_DIR/linux
+: "${KOUT:=}"                     # O= build dir; empty = $KSRC/build-$ARCH (set by kbuild_check_tree)
 : "${BUILD_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build}"
 : "${KERNEL_REPO:=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git}"
 : "${KERNEL_BRANCH:=master}"
@@ -57,11 +64,20 @@ kbuild_check_tools() {
 
 kbuild_check_tree() {
     [[ -n "$KSRC" && -f "$KSRC/Kbuild" ]] || die "KSRC does not look like a kernel tree: '$KSRC'"
+    # kbuild refuses O= builds while an in-tree build exists in the source.
+    if [[ -e "$KSRC/.config" || -d "$KSRC/include/config" ]]; then
+        die "$KSRC has an in-tree build; builds are out-of-tree now. Once:
+    cp $KSRC/.config /somewhere/safe && make -C $KSRC mrproper
+    then put that .config in \$KOUT (default $KSRC/build-$ARCH)"
+    fi
+    : "${KOUT:=$KSRC/build-$ARCH}"
+    mkdir -p "$KOUT"
+    KOUT=$(cd "$KOUT" && pwd)
 }
 
 # make in $KSRC with the arch/toolchain/version vars. KBUILD_SUDO=sudo to escalate.
 kbuild_make() {
-    local args=(-C "$KSRC" ARCH="$ARCH" -j"$JOBS")
+    local args=(-C "$KSRC" O="$KOUT" ARCH="$ARCH" -j"$JOBS")
     [[ -n "$CROSS_COMPILE" ]] && args+=(CROSS_COMPILE="$CROSS_COMPILE")
     [[ -n "$LLVM" ]] && args+=(LLVM="$LLVM")
     [[ -n "${LOCALVERSION+x}" ]] && args+=(LOCALVERSION="$LOCALVERSION")
@@ -70,7 +86,7 @@ kbuild_make() {
 
 # .config setters (scripts/config). Run `kbuild_make olddefconfig` afterwards so
 # dependencies resolve.
-kbuild_cfg()     { "$KSRC/scripts/config" --file "$KSRC/.config" "$@"; }
+kbuild_cfg()     { "$KSRC/scripts/config" --file "$KOUT/.config" "$@"; }
 kbuild_enable()  { local o; for o in "$@"; do kbuild_cfg --enable  "$o"; done; }
 kbuild_disable() { local o; for o in "$@"; do kbuild_cfg --disable "$o"; done; }
 
@@ -87,7 +103,7 @@ kbuild_merge_fragments() {
     kbuild_check_fragments
     log "Merging config fragments: $CONFIG_FRAGMENTS"
     # shellcheck disable=SC2086
-    "$KSRC/scripts/kconfig/merge_config.sh" -m -O "$KSRC" "$KSRC/.config" $CONFIG_FRAGMENTS
+    "$KSRC/scripts/kconfig/merge_config.sh" -m -O "$KOUT" "$KOUT/.config" $CONFIG_FRAGMENTS
 }
 
 kbuild_clone() {
@@ -114,7 +130,6 @@ main() {
     kbuild_check_fragments   # fail before the long clone/build
 
     if [[ -n "$KSRC" ]]; then
-        kbuild_check_tree
         log "Kernel source: $KSRC (existing tree, not touching git)"
     else
         KSRC="$BUILD_DIR/linux"
@@ -122,10 +137,12 @@ main() {
         log "Kernel branch: $KERNEL_BRANCH"
         kbuild_clone
     fi
+    kbuild_check_tree
+    log "Build dir    : $KOUT"
     log "Arch         : $ARCH"
     [[ -n "$CONFIG_FRAGMENTS" ]] && log "Fragments    : $CONFIG_FRAGMENTS"
 
-    if [[ -f "$KSRC/.config" ]]; then
+    if [[ -f "$KOUT/.config" ]]; then
         log "Reusing existing .config"
     else
         log "Generating base config ($DEFCONFIG)"

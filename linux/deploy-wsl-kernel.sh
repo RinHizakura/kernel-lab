@@ -112,7 +112,7 @@ if [ "$MODE" != "switch" ]; then
   [ -n "$TAG" ] && LOCALVERSION="-$TAG"
   log "make -j$JOBS ${TAG:+(LOCALVERSION=-$TAG)}..."
   kbuild_make
-  BZ="$KSRC/arch/x86/boot/bzImage"
+  BZ="$KOUT/arch/x86/boot/bzImage"
   [ -f "$BZ" ] || die "bzImage not found after build"
 
   VER="$(kbuild_make -s kernelrelease)"   # already includes -$TAG

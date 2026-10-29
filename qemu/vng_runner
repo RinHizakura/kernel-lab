@@ -37,7 +37,7 @@ Options:
   -a ARCH     Target architecture passed to vng --arch (e.g. arm64, riscv64).
               Also selects install_<arch>/bin/qemu-system-<arch> when available
               and defaults --root to <arch>-rootfs/ next to this script.
-  -r KDIR     Kernel tree to boot (default: the cwd).
+  -r KDIR     Kernel tree or O= build dir to boot (default: the cwd).
   -d DEVICE   Attach a storage device. Supported:
                 usb-storage   USB EHCI stick backed by $USBIMG
                 ufs           UFS host controller + LU backed by $UFSIMG
@@ -54,8 +54,8 @@ straight through to vng untouched.
 Examples:
   ${0##*/} -d ufs                 # boot host kernel with a UFS device
   ${0##*/} -a arm64 -d usb-storage
-  ${0##*/} -r ~/linux/stable-linux -d ufs      # boot a specific kernel tree
-  ${0##*/} -r ~/linux/stable-linux -k -d usb-storage   # kdump, /dev/sda for vmcore
+  ${0##*/} -r ~/linux/stable-linux/build-x86_64 -d ufs   # an out-of-tree build dir
+  ${0##*/} -a arm64 -r ~/linux/stable-linux/build-arm64 -k -d usb-storage
 EOF
 }
 
@@ -87,7 +87,7 @@ function devargs() {
     echo $ARGS
 }
 
-OPTS=
+OPT=()
 QEMU_OPTS=
 BOOTARGS=
 ARCH=
@@ -131,20 +131,20 @@ done
 shift $((OPTIND - 1))
 
 KDIR=$(realpath "$KDIR") || exit 1
-OPT+=" -r $KDIR"
+OPT+=(-r "$KDIR")
 
 if [[ -n $ARCH ]]; then
-    OPT+=" --arch $ARCH"
+    OPT+=(--arch "$ARCH")
     # vng needs a foreign --root for a cross arch; default to the rootfs that
     # make_rootfs.sh builds next to this script unless one was given.
     ROOTFS="$SCRIPT_DIR/$ARCH-rootfs"
     if [[ -d $ROOTFS && " $* " != *" --root "* ]]; then
-        OPT+=" --root $ROOTFS"
+        OPT+=(--root "$ROOTFS")
     fi
     # A cross arch runs under TCG; vng's default of one vCPU per host core
     # only slows boot down there. Override with --cpus N after --.
     if [[ " $* " != *" --cpus "* ]]; then
-        OPT+=" --cpus 4"
+        OPT+=(--cpus 4)
     fi
 fi
 
@@ -163,14 +163,14 @@ if [[ -n $KDUMP ]]; then
     BOOTARGS+="crashkernel=512M kdump_kernel=$KIMG kdump_initrd=$INITRD"
     QEMU_OPTS+=" -device vmcoreinfo"
     if [[ " $* " != *" --memory "* ]]; then
-        OPT+=" --memory 4G"
+        OPT+=(--memory 4G)
     fi
     GUEST_SHELL=$SCRIPT_DIR/kdump-shell.sh
     # A cross-arch guest boots its own --root and cannot see the host: share
     # what kdump-shell.sh needs (kexec itself comes from the rootfs).
     if [[ -n $ARCH ]]; then
         for d in $(printf '%s\n' "$SCRIPT_DIR" "$KDIR" "${INITRD%/*}" | sort -u); do
-            OPT+=" --rodir=$d=$d"
+            OPT+=("--rodir=$d=$d")
         done
     fi
 fi
@@ -181,25 +181,27 @@ QEMU_ARCH="$(qemu_suffix "$ARCH")"
 QEMU_BIN="$SCRIPT_DIR/install_$QEMU_ARCH/bin/qemu-system-$QEMU_ARCH"
 if [[ -x $QEMU_BIN ]]; then
     echo "Using local QEMU: $QEMU_BIN"
-    OPT+=" --qemu $QEMU_BIN"
+    OPT+=(--qemu "$QEMU_BIN")
 fi
 
-if [[ ! -z $BOOTARGS ]]; then
-    OPT+=" --append='$BOOTARGS'"
+# vng splits these strings itself; the = form keeps a leading "-device"
+# from being taken for an option.
+if [[ -n $BOOTARGS ]]; then
+    OPT+=("--append=$BOOTARGS")
 fi
 
-if [[ ! -z $QEMU_OPTS ]]; then
-    OPT+=" -o='$QEMU_OPTS'"
+if [[ -n $QEMU_OPTS ]]; then
+    OPT+=("-o=$QEMU_OPTS")
 fi
 
 # Run vng with bash shell by default, just for faster booting
-OPT+=" --shell ${GUEST_SHELL:-/bin/bash}"
+OPT+=(--shell "${GUEST_SHELL:-/bin/bash}")
 
 # Show the kernel boot log (loglevel=7); vng hides it behind quiet/loglevel=1
 # otherwise. Pass --quiet after -- to override.
 if [[ " $* " != *" --quiet "* ]]; then
-    OPT+=" --verbose"
+    OPT+=(--verbose)
 fi
 
-echo "Running vng with options: $OPT $@"
-eval "vng $OPT $@"
+echo "Running: $(printf '%q ' vng "${OPT[@]}" "$@")"
+exec vng "${OPT[@]}" "$@"

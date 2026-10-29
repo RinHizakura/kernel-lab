@@ -287,18 +287,19 @@ fi
 SRC_DIR=$(cd "$KSRC" 2>/dev/null && pwd) \
   || die "KSRC not set or not a directory: '${KSRC}'  (edit KSRC at the top, or export it)"
 KSRC="$SRC_DIR"
-kbuild_check_tree
-STAGE_DIR="${SRC_DIR}/.deploy-staging"
-KSELF_STAGE="${SRC_DIR}/.deploy-kselftest"  # `make ... install` output: binaries + run_kselftest.sh, no .c
+kbuild_check_tree            # also settles KOUT (O= build dir, default $KSRC/build-$ARCH)
+STAGE_DIR="${KOUT}/.deploy-staging"
+KSELF_STAGE="${KOUT}/.deploy-kselftest"  # `make ... install` output: binaries + run_kselftest.sh, no .c
 log "Kernel source: $SRC_DIR"
+log "Build dir    : $KOUT"
 
 kbuild_check_tools
 
 finalize_localversion() {
   if [ -n "$LOCALVERSION_USER" ]; then return; fi
-  [ -f "$SRC_DIR/.config" ] || die "no .config yet — cannot derive version hash"
+  [ -f "$KOUT/.config" ] || die "no .config yet — cannot derive version hash"
   local cfg head
-  cfg="$(sha1sum "$SRC_DIR/.config" | cut -c1-8)"
+  cfg="$(sha1sum "$KOUT/.config" | cut -c1-8)"
   head="$(git -C "$SRC_DIR" rev-parse --short=8 HEAD 2>/dev/null || echo nogit)"
   LOCALVERSION="${DO_DEBUG:+-debug}${DO_RT:+-rt}-g${cfg}-${head}"
   log "Auto version suffix: $LOCALVERSION (.config sha1 + git HEAD)"
@@ -350,8 +351,8 @@ config_wifi() {
     FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD
 }
 
-# The same tree/.config is also booted under QEMU with virtme-ng
-# (qemu/vng_runner -a arm64). vng passes no initramfs when given --root, so
+# The same build is also booted under QEMU with virtme-ng
+# (qemu/vng_runner -a arm64 -r $KOUT). vng passes no initramfs when given --root, so
 # the 9p root, the overlay it stacks on top and virtiofs/FUSE must be built
 # in (=y), not modules. Harmless on the Pi: a few extra built-in filesystems.
 config_vng_qemu() {
@@ -443,7 +444,7 @@ config_debug() {
     die "tryboot patch not found: $KERNEL_PATCH"
   fi
 
-  if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$SRC_DIR/.config" ]; }; then
+  if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$KOUT/.config" ]; }; then
     log "Generating .config from $DEFCONFIG"
     kbuild_make "$DEFCONFIG"
     config_defconfig_tweaks
@@ -486,7 +487,7 @@ config_debug() {
   log "Building kselftests (cross-compile is best-effort)"
   rm -rf "$KSELF_STAGE"
   kbuild_make headers
-  if make -C "$SRC_DIR/tools/testing/selftests" \
+  if make -C "$SRC_DIR/tools/testing/selftests" O="$KOUT" \
        ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" ${LLVM:+LLVM="$LLVM"} -j"$JOBS" \
        install INSTALL_PATH="$KSELF_STAGE"; then
     log "kselftests staged -> $KSELF_STAGE"
@@ -498,18 +499,18 @@ KREL="$(kbuild_make -s kernelrelease 2>/dev/null)"
 [ -n "$KREL" ] || die "Could not determine kernel release (build first?)"
 log "Kernel release: $KREL  ->  $BOOT_DIR/new/ (tryboot slot; current/ untouched)"
 
-IMAGE="$SRC_DIR/arch/arm64/boot/Image.gz"
-CONFIG_SRC="$SRC_DIR/.config"
-SYSMAP_SRC="$SRC_DIR/System.map"
+IMAGE="$KOUT/arch/arm64/boot/Image.gz"
+CONFIG_SRC="$KOUT/.config"
+SYSMAP_SRC="$KOUT/System.map"
 DTB_NAME="bcm2711-rpi-4-b.dtb"
-DTB_SRC="$SRC_DIR/arch/arm64/boot/dts/broadcom/$DTB_NAME"
+DTB_SRC="$KOUT/arch/arm64/boot/dts/broadcom/$DTB_NAME"
 
 # Vendor overlays in config.txt (vc4-kms-v3d/disable-bt/dwc2) are written against
 # downstream labels; the firmware part-applies them to the upstream DTB and the
 # kernel dies before console. The upstream DTB already enables vc4 KMS in-tree, so
 # replace each with a no-op overlay in the new/ slot.
 NEUTRALIZE_OVERLAYS="vc4-kms-v3d disable-bt dwc2"
-DTC_BIN="$(command -v dtc || echo "$SRC_DIR/scripts/dtc/dtc")"
+DTC_BIN="$(command -v dtc || echo "$KOUT/scripts/dtc/dtc")"
 
 [ -f "$IMAGE" ]      || die "Missing $IMAGE — run the build first."
 [ -f "$CONFIG_SRC" ] || die "Missing $CONFIG_SRC — run the build first."
@@ -520,7 +521,7 @@ DTC_BIN="$(command -v dtc || echo "$SRC_DIR/scripts/dtc/dtc")"
 
 # Stage the upstream DTB + a no-op overlay on the build host ($DTB_WORK also holds
 # the cmdline). The no-op replaces the incompatible vendor overlays in new/.
-DTB_WORK="$SRC_DIR/.deploy-dtb"
+DTB_WORK="$KOUT/.deploy-dtb"
 DTB_OUT="$DTB_WORK/$DTB_NAME"
 NOOP_DTBO="$DTB_WORK/noop.dtbo"
 rm -rf "$DTB_WORK"; mkdir -p "$DTB_WORK"

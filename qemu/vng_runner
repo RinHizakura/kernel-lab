@@ -2,31 +2,31 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib.sh
-source "$SCRIPT_DIR/../lib.sh"   # die, arch_name, kernel_release
-
-USBIMG=usb.img
-UFSIMG=ufs.img
+source "$SCRIPT_DIR/../lib.sh"   # log/die, arch_name
 
 function usage() {
     cat <<EOF
-Usage: ${0##*/} [-h] [-a ARCH] [-r KDIR] [-d DEVICE] [-k] [-- VNG_ARGS...]
+Usage: ${0##*/} [-h] [-n] [-a ARCH] [-r KDIR] [-d DEVICE] [-k] [-- VNG_ARGS...]
 
 Thin wrapper around vng (virtme-ng) that attaches extra QEMU devices and
-auto-selects the locally built QEMU under install_<arch>/bin if present.
+auto-selects the locally built QEMU under install_<ARCH>/bin if present.
 
 Options:
   -a ARCH     Target architecture passed to vng --arch (e.g. arm64, riscv64).
-              Also selects install_<arch>/bin/qemu-system-<arch> when available
-              and defaults --root to <arch>-rootfs/ next to this script.
+              Also selects install_<ARCH>/bin/qemu-system-* when available and,
+              for a cross arch, boots the <ARCH>-rootfs next to this script
+              (make_rootfs.sh builds it and keeps its modules in step with
+              the kernel in KDIR).
   -r KDIR     Kernel tree or O= build dir to boot (default: the cwd).
   -d DEVICE   Attach a storage device. Supported:
-                usb-storage   USB EHCI stick backed by $USBIMG
-                ufs           UFS host controller + LU backed by $UFSIMG
+                usb-storage   USB EHCI stick backed by KDIR/usb.img
+                ufs           UFS host controller + LU backed by KDIR/ufs.img
               (disk images are auto-created with ext4 on first use)
   -k          Enable kdump testing: crashkernel=512M, 4G guest, vmcoreinfo, and
               kexec -p the booted kernel as dump-capture kernel at shell start
-              (see kdump-shell.sh). Its initrd is kdump-initrd-<ARCH>.img in
-              KDIR, built by make_rootfs.sh on first use.
+              (see kdump-shell.sh). Its initrd is KDIR/kdump-initrd-<ARCH>.img,
+              built by make_rootfs.sh on first use.
+  -n          Print the vng command line and exit; touches nothing.
   -h          Show this help and exit.
 
 Use -- to separate extra vng arguments; everything after it is passed
@@ -40,32 +40,15 @@ Examples:
 EOF
 }
 
+# devargs DEVICE IMG: the QEMU options for a storage device backed by IMG.
 function devargs() {
-    D=$1
-    ARGS=
-    case $D in
-        "usb-storage")
-            if [ ! -f $USBIMG ]; then
-                dd if=/dev/zero of=$USBIMG bs=1k count=1024 >&2
-                mkfs -t ext4 $USBIMG >&2
-            fi
-            ARGS="-drive if=none,id=usbstick,format=raw,file=$USBIMG \
-                  -usb                                               \
-                  -device usb-ehci,id=ehci                           \
-                  -device usb-storage,bus=ehci.0,drive=usbstick"
-         ;;
-        "ufs")
-            if [ ! -f $UFSIMG ]; then
-                dd if=/dev/zero of=$UFSIMG bs=1k count=1024 >&2
-                mkfs -t ext4 $UFSIMG >&2
-            fi
-            ARGS="-drive if=none,id=ufslu0,format=raw,file=$UFSIMG \
-                  -device ufs,id=ufs0,nutrs=32,nutmrs=8            \
-                  -device ufs-lu,drive=ufslu0,bus=ufs0"
-         ;;
+    case $1 in
+        usb-storage)
+            echo "-drive if=none,id=usbstick,format=raw,file=$2 -usb -device usb-ehci,id=ehci -device usb-storage,bus=ehci.0,drive=usbstick" ;;
+        ufs)
+            echo "-drive if=none,id=ufslu0,format=raw,file=$2 -device ufs,id=ufs0,nutrs=32,nutmrs=8 -device ufs-lu,drive=ufslu0,bus=ufs0" ;;
+        *) die "Invalid device option $1" ;;
     esac
-
-    echo $ARGS
 }
 
 OPT=()
@@ -73,7 +56,9 @@ QEMU_OPTS=
 BOOTARGS=
 ARCH=
 KDIR=.
-while getopts ":hka:r:d:" opt
+DEVICES=()
+DRYRUN=
+while getopts ":hkna:r:d:" opt
 do
     case $opt in
         h)
@@ -87,14 +72,13 @@ do
             KDIR=$OPTARG
         ;;
         d)
-            args=`devargs $OPTARG`
-            if [ -z "$args" ]; then
-                die "Invalid device option $OPTARG"
-            fi
-            QEMU_OPTS+=$args
+            DEVICES+=("$OPTARG")
         ;;
         k)
             KDUMP=1
+        ;;
+        n)
+            DRYRUN=1
         ;;
         \?)
             echo "Unknown option: -$OPTARG" >&2
@@ -113,19 +97,28 @@ shift $((OPTIND - 1))
 KDIR=$(realpath "$KDIR") || exit 1
 OPT+=(-r "$KDIR")
 
+# Disk images live next to the kernel in KDIR.
+for dev in "${DEVICES[@]}"; do
+    img=$KDIR/${dev%%-*}.img                 # usb.img / ufs.img
+    QEMU_OPTS+=" $(devargs "$dev" "$img")" || exit 1
+    if [[ -z $DRYRUN && ! -f $img ]]; then
+        dd if=/dev/zero of="$img" bs=1k count=1024 status=none && mkfs -t ext4 -q "$img" || exit 1
+    fi
+done
+
+# The guest images, from make_rootfs.sh: a rootfs for a cross arch (empty
+# line for the host's own arch) and the kdump initrd, both kept in step with
+# the kernel in KDIR. -n only asks where they would be.
+if [[ -n $ARCH || -n $KDUMP ]]; then
+    MODE=ensure; [[ -n $DRYRUN ]] && MODE=paths
+    { read -r ROOTFS; read -r INITRD; } < <("$SCRIPT_DIR/make_rootfs.sh" $MODE "${ARCH:-x86_64}" "$KDIR") || exit 1
+    [[ -n $INITRD ]] || die "make_rootfs.sh failed"
+fi
+
 if [[ -n $ARCH ]]; then
     OPT+=(--arch "$ARCH")
-    # vng needs a foreign --root for a cross arch: use the rootfs next to this
-    # script unless one was given, building it on first use and keeping its
-    # modules in step with the kernel in KDIR.
-    ROOTFS="$SCRIPT_DIR/$ARCH-rootfs"
-    if [[ " $* " != *" --root "* ]]; then
-        KREL=$(kernel_release "$KDIR")
-        if [[ ! -d $ROOTFS ]]; then
-            KSRC=$KDIR DEST=$ROOTFS "$SCRIPT_DIR/make_rootfs.sh" "$ARCH" rootfs || exit 1
-        elif [[ -n $KREL && ! -d $ROOTFS/lib/modules/$KREL ]]; then
-            KSRC=$KDIR DEST=$ROOTFS "$SCRIPT_DIR/make_rootfs.sh" "$ARCH" modules || exit 1
-        fi
+    # vng needs a foreign --root for a cross arch unless one was given.
+    if [[ -n $ROOTFS && " $* " != *" --root "* ]]; then
         OPT+=(--root "$ROOTFS")
     fi
     # A cross arch runs under TCG; vng's default of one vCPU per host core
@@ -135,14 +128,8 @@ if [[ -n $ARCH ]]; then
     fi
 fi
 
-# kdump: the capture-kernel initrd lives next to the kernel image in KDIR
-# and is built on first use.
 if [[ -n $KDUMP ]]; then
     KIMG=$KDIR/$(arch_name kimg "${ARCH:-x86_64}") || exit 1
-    INITRD=$KDIR/kdump-initrd-${ARCH:-x86_64}.img
-    if [[ ! -f $INITRD ]]; then
-        OUT=$INITRD "$SCRIPT_DIR/make_rootfs.sh" "${ARCH:-x86_64}" initrd || exit 1
-    fi
     # kexec -p reads the whole Image into memory and the capture kernel has
     # to boot inside crashkernel=; a debug (KASAN) Image is ~150M, so both
     # the guest and the reservation need room. Override with --memory after --.
@@ -154,7 +141,7 @@ if [[ -n $KDUMP ]]; then
     GUEST_SHELL=$SCRIPT_DIR/kdump-shell.sh
     # A cross-arch guest boots its own --root and cannot see the host: share
     # what kdump-shell.sh needs (kexec itself comes from the rootfs).
-    if [[ -n $ARCH ]]; then
+    if [[ -n $ROOTFS ]]; then
         OPT+=("--rodir=$SCRIPT_DIR=$SCRIPT_DIR" "--rodir=$KDIR=$KDIR")
     fi
 fi
@@ -163,7 +150,7 @@ fi
 # back to the system QEMU that vng picks by default.
 QEMU_BIN="$SCRIPT_DIR/install_${ARCH:-x86_64}/bin/qemu-system-$(arch_name qemu "${ARCH:-x86_64}")" || exit 1
 if [[ -x $QEMU_BIN ]]; then
-    echo "Using local QEMU: $QEMU_BIN"
+    log "Using local QEMU: $QEMU_BIN"
     OPT+=(--qemu "$QEMU_BIN")
 fi
 
@@ -186,5 +173,9 @@ if [[ " $* " != *" --quiet "* ]]; then
     OPT+=(--verbose)
 fi
 
-echo "Running: $(printf '%q ' vng "${OPT[@]}" "$@")"
+if [[ -n $DRYRUN ]]; then
+    printf '%q ' vng "${OPT[@]}" "$@"; echo
+    exit 0
+fi
+log "Running: $(printf '%q ' vng "${OPT[@]}" "$@")"
 exec vng "${OPT[@]}" "$@"

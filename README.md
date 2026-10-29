@@ -55,7 +55,9 @@ A tree that still has an in-tree build is refused; save its `.config`,
 ## Boot and kdump
 
 `qemu/vng_runner` wraps `vng`: `-r` picks the build dir (default: cwd),
-`-a` the arch, `-d` attaches a disk, `-k` turns on kdump.
+`-a` the arch, `-d` attaches a disk (its image lives in the build dir),
+`-k` turns on kdump, `-n` prints the vng command line and exits without
+touching anything.
 
 ```bash
 cd ~/linux/stable-linux
@@ -67,7 +69,7 @@ What `-k` does:
 
 - reserves `crashkernel=512M`, gives the guest 4G, adds `-device vmcoreinfo`
 - builds `kdump-initrd-<ARCH>.img` next to the kernel image on first use
-  (`make_rootfs.sh <ARCH> initrd`: Ubuntu's static busybox as a newc cpio)
+  (Ubuntu's static busybox as a newc cpio)
 - replaces the guest shell with `kdump-shell.sh`, which `kexec -p` loads
   the running kernel as the dump-capture kernel and then drops you into
   your normal shell
@@ -79,12 +81,14 @@ sudo sh -c 'echo c > /proc/sysrq-trigger'   # capture kernel boots into a busybo
 mount /dev/sda /mnt && cp /proc/vmcore /mnt/   # with -d usb-storage
 ```
 
-A cross arch (`-a arm64`, `-a riscv64`, ...) needs its own root: `vng_runner`
-builds `qemu/<ARCH>-rootfs` on first use (`make_rootfs.sh <ARCH>`: Ubuntu
-base tarball, busybox, kexec-tools, stub udev) and reinstalls the modules
-whenever they do not match the kernel being booted. The script dir and the
-build dir are shared into the guest read-only so `kdump-shell.sh`, the
-image and the initrd are reachable at their host paths.
+The guest images belong to `qemu/make_rootfs.sh`: `paths ARCH KDIR` says
+where they are, `ensure ARCH KDIR` makes them exist and match the kernel in
+KDIR, and `vng_runner` only ever asks it. A cross arch (`-a arm64`,
+`-a riscv64`, ...) needs its own root, `qemu/<ARCH>-rootfs` (Ubuntu base
+tarball, busybox, kexec-tools, stub udev, the kernel's modules); the host's
+own arch boots the host root. The script dir and the build dir are shared
+into a cross-arch guest read-only so `kdump-shell.sh`, the image and the
+initrd are reachable at their host paths.
 
 `qemu/build_qemu.sh` builds QEMU from source into `qemu/install_<ARCH>/`;
 `vng_runner` prefers that binary when present (`ARCH=arm64 ./build_qemu.sh`).

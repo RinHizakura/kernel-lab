@@ -1,38 +1,41 @@
 #!/usr/bin/env bash
 #
-# Build guest filesystems for vng_runner from Ubuntu packages, for any arch
-# vng supports. No root, no chroot, no qemu-user, nothing compiled.
+# The guest images vng_runner boots with, built from Ubuntu packages for any
+# arch vng supports: no root, no chroot, no qemu-user, nothing compiled.
 #
-#   rootfs  minimal Ubuntu rootfs for `vng --root`: base tarball + a few debs
-#           (busybox, kexec) unpacked with dpkg-deb, plus the stubs vng's
-#           init expects; with KSRC also the kernel's modules
-#   modules only `make modules_install` from KSRC into an existing DEST
-#   initrd  busybox-static repacked as a newc cpio, used as the dump-capture
-#           kernel's initrd by `vng_runner -k`
+#   rootfs  <this dir>/<ARCH>-rootfs: minimal Ubuntu rootfs for `vng --root`
+#           (base tarball, busybox, kexec-tools, the stubs vng's init expects,
+#           and the modules of the kernel in KDIR). Only for a cross arch; the
+#           host's own arch boots the host root.
+#   initrd  KDIR/kdump-initrd-<ARCH>.img: busybox-static as a newc cpio, the
+#           dump-capture kernel's initrd for `vng_runner -k`.
 #
 # Usage:
-#   ./make_rootfs.sh ARCH [rootfs|modules|initrd]   # ARCH as vng --arch: arm64, riscv64, x86_64...
-#   KSRC=~/linux/stable-linux/build-arm64 ./make_rootfs.sh arm64
-#   KSRC=~/linux/stable-linux/build-arm64 ./make_rootfs.sh arm64 modules
-#   OUT=/path/x.img ./make_rootfs.sh riscv64 initrd
+#   ./make_rootfs.sh paths  ARCH KDIR   # print the two paths, touch nothing
+#   ./make_rootfs.sh ensure ARCH KDIR   # make them exist and match KDIR's kernel, then print them
 #
-#   REL    Ubuntu release (default 24.04); CODENAME is derived from REL
-#   rootfs / modules:
-#   DEST   target directory (default ./<ARCH>-rootfs, relative to the cwd)
-#   KSRC   kernel tree or O= build dir to take the modules from
-#   CROSS_COMPILE  toolchain prefix for modules_install (default per ARCH)
-#   initrd:
-#   OUT    output file (default ./kdump-initrd-<ARCH>.img, relative to the cwd)
+# Both print two lines on stdout: the rootfs dir (empty for the host's arch)
+# and the initrd path. ensure is idempotent: it rebuilds the rootfs when it
+# is missing, reinstalls the modules when lib/modules lacks the release of
+# the kernel built in KDIR, adds kexec when an older rootfs lacks it, and
+# builds the initrd when it is missing.
+#
+#   ARCH   vng --arch name: x86_64, arm64, riscv64, ...
+#   KDIR   the kernel's O= build dir (or in-tree build)
+#   ROOTFS override the rootfs dir; REL Ubuntu release (default 24.04);
+#   CROSS_COMPILE toolchain prefix for modules_install (default per ARCH); JOBS
 #
 set -euo pipefail
 
-ARCH="${1:?usage: ${0##*/} ARCH [rootfs|initrd]}"
-MODE="${2:-rootfs}"
+MODE="${1:?usage: ${0##*/} paths|ensure ARCH KDIR}"
+ARCH="${2:?usage: ${0##*/} paths|ensure ARCH KDIR}"
+KDIR="${3:?usage: ${0##*/} paths|ensure ARCH KDIR}"
 REL="${REL:-24.04}"
 JOBS="${JOBS:-$(nproc)}"
 
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib.sh
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib.sh"   # log/warn/die, arch_name
+source "$SCRIPT_DIR/../lib.sh"   # log/warn/die, arch_name, host_arch, kernel_release
 
 DEB_ARCH=$(arch_name deb "$ARCH")
 KARCH=$(arch_name kernel "$ARCH")      # for modules_install
@@ -50,6 +53,19 @@ case $REL in
 esac
 CDIMAGE="http://cdimage.ubuntu.com/ubuntu-base/releases/$REL/release"
 
+# Where the images live. The host's own arch needs no rootfs.
+rootfs_dir() {
+    if [[ $ARCH == "$(host_arch)" ]]; then echo; else echo "${ROOTFS:-$SCRIPT_DIR/$ARCH-rootfs}"; fi
+}
+initrd_path() { echo "$KDIR/kdump-initrd-$ARCH.img"; }
+
+if [[ $MODE == paths ]]; then
+    rootfs_dir; initrd_path
+    exit 0
+fi
+[[ $MODE == ensure ]] || die "unknown mode $MODE (paths|ensure)"
+KDIR=$(realpath "$KDIR")
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -66,20 +82,32 @@ fetch_deb() {
     dpkg-deb -x "$TMP/$pkg.deb" "$dir"
 }
 
-# install_modules DEST: `make modules_install` from KSRC (a tree or an O= dir).
-# The rootfs serves one kernel at a time, so older module trees are dropped.
+# add_debs DEST PKG...: unpack Ubuntu packages on top of a rootfs.
+add_debs() {
+    local dest=$1 pkg; shift
+    log "Unpacking debs: $*"
+    for pkg in "$@"; do
+        # Some debs still carry a ./bin/ directory entry; extracting that
+        # straight into dest replaces the usrmerge symlink bin -> usr/bin
+        # with a real dir.
+        rm -rf "$TMP/x"; fetch_deb "$pkg" "$TMP/x"
+        tar -C "$TMP/x" -c . | tar -C "$dest" -x --keep-directory-symlink
+    done
+}
+
+# install_modules DEST: `make modules_install` from the build in KDIR. The
+# rootfs serves one kernel at a time, so older module trees are dropped.
 install_modules() {
-    log "Installing modules from $KSRC"
+    log "Installing modules from $KDIR"
     rm -rf "$1/lib/modules"
-    make -C "$KSRC" ARCH="$KARCH" CROSS_COMPILE="${CROSS_COMPILE:-$CROSS}" -j"$JOBS" \
+    make -C "$KDIR" ARCH="$KARCH" CROSS_COMPILE="${CROSS_COMPILE:-$CROSS}" -j"$JOBS" \
         INSTALL_MOD_PATH="$1" INSTALL_MOD_STRIP=1 modules_install
 }
 
+# make_rootfs DEST: the Ubuntu base rootfs from scratch, modules included
+# when KDIR holds a built kernel.
 make_rootfs() {
-    local dest tarball
-    dest="$(realpath -m "${DEST:-./$ARCH-rootfs}")"
-    # Packages unpacked on top of the base image.
-    local debs="busybox-static kexec-tools"
+    local dest=$1 tarball
     # busybox applets that vng's guest init / typical kernel testing expects.
     local applets="poweroff reboot halt ip modprobe insmod rmmod depmod lsmod deallocvt"
 
@@ -92,14 +120,7 @@ make_rootfs() {
     tar -xzf "$TMP/$tarball" -C "$dest" --no-same-owner --no-same-permissions \
         2> >(grep -vE 'Cannot mknod|Cannot change' >&2 || true)
 
-    log "Unpacking debs: $debs"
-    for pkg in $debs; do
-        # Some debs still carry a ./bin/ directory entry; extracting that
-        # straight into dest replaces the usrmerge symlink bin -> usr/bin
-        # with a real dir.
-        rm -rf "$TMP/x"; fetch_deb "$pkg" "$TMP/x"
-        tar -C "$TMP/x" -c . | tar -C "$dest" -x --keep-directory-symlink
-    done
+    add_debs "$dest" busybox-static kexec-tools
 
     log "busybox applets: $applets"
     for a in $applets; do
@@ -129,23 +150,19 @@ STUB
     printf '#!/bin/sh\nexit 0\n' > "$dest/usr/bin/udevadm"
     chmod +x "$dest/usr/lib/systemd/systemd-udevd" "$dest/usr/bin/udevadm"
 
-    if [[ -n ${KSRC:-} ]]; then
+    if [[ -n $(kernel_release "$KDIR") ]]; then
         install_modules "$dest"
     else
         # Still boots: vng passes no initramfs for --root, so 9p/overlay must
-        # be built into the kernel anyway. Only modprobe inside the guest is
-        # empty.
-        log "KSRC not set: no modules installed. Add them later with:"
-        log "  make -C <ksrc> ARCH=$KARCH CROSS_COMPILE=${CROSS_COMPILE:-$CROSS} INSTALL_MOD_PATH=$dest modules_install"
+        # be built into the kernel anyway. The next ensure installs them.
+        warn "no kernel built in $KDIR yet: no modules installed"
     fi
-
     log "Done: $dest"
-    log "Boot: vng_runner -a $ARCH -- -r ${KSRC:-<ksrc>} --root $dest"
 }
 
+# make_initrd OUT: the dump-capture kernel's busybox initrd.
 make_initrd() {
-    local out bb r
-    out="$(realpath -m "${OUT:-./kdump-initrd-$ARCH.img}")"
+    local out=$1 bb r
 
     log "Fetching busybox-static ($CODENAME $DEB_ARCH)"
     fetch_deb busybox-static "$TMP/x"
@@ -187,11 +204,19 @@ RCS
     log "Done: $out ($(file -b "$bb" | cut -d, -f2))"
 }
 
-case $MODE in
-    rootfs) make_rootfs ;;
-    modules)
-        [[ -n ${KSRC:-} ]] || die "modules mode needs KSRC"
-        install_modules "$(realpath -m "${DEST:-./$ARCH-rootfs}")" ;;
-    initrd) make_initrd ;;
-    *) die "unknown mode $MODE (rootfs|modules|initrd)" ;;
-esac
+# --- ensure -----------------------------------------------------------------
+dest=$(rootfs_dir)
+if [[ -n $dest ]]; then
+    krel=$(kernel_release "$KDIR")
+    if [[ ! -d $dest ]]; then
+        make_rootfs "$dest"
+    else
+        [[ -x $dest/usr/sbin/kexec ]] || add_debs "$dest" kexec-tools
+        if [[ -n $krel && ! -d $dest/lib/modules/$krel ]]; then
+            install_modules "$dest"
+        fi
+    fi
+fi
+initrd=$(initrd_path)
+[[ -f $initrd ]] || make_initrd "$initrd"
+rootfs_dir; initrd_path

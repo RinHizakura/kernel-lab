@@ -31,8 +31,8 @@ MODE="${2:-rootfs}"
 REL="${REL:-24.04}"
 JOBS="${JOBS:-$(nproc)}"
 
-msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib.sh"   # log/warn/die
 
 # vng --arch names are Debian arch names except x86_64. amd64 lives on the
 # main archive, everything else on ports. KARCH/CROSS are for modules_install.
@@ -76,7 +76,7 @@ fetch_deb() {
 # install_modules DEST: `make modules_install` from KSRC (a tree or an O= dir).
 # The rootfs serves one kernel at a time, so older module trees are dropped.
 install_modules() {
-    msg "Installing modules from $KSRC"
+    log "Installing modules from $KSRC"
     rm -rf "$1/lib/modules"
     make -C "$KSRC" ARCH="$KARCH" CROSS_COMPILE="${CROSS_COMPILE:-$CROSS}" -j"$JOBS" \
         INSTALL_MOD_PATH="$1" INSTALL_MOD_STRIP=1 modules_install
@@ -90,7 +90,7 @@ make_rootfs() {
     # busybox applets that vng's guest init / typical kernel testing expects.
     local applets="poweroff reboot halt ip modprobe insmod rmmod depmod lsmod deallocvt"
 
-    msg "Base image: ubuntu-base $REL $DEB_ARCH -> $dest"
+    log "Base image: ubuntu-base $REL $DEB_ARCH -> $dest"
     tarball="$(curl -sSf "$CDIMAGE/" | grep -oE "ubuntu-base-[0-9.]+-base-$DEB_ARCH\.tar\.gz" | sort -uV | tail -1)"
     [[ -n $tarball ]] || die "no $DEB_ARCH base tarball found under $CDIMAGE"
     curl -sSfL -o "$TMP/$tarball" "$CDIMAGE/$tarball"
@@ -99,7 +99,7 @@ make_rootfs() {
     tar -xzf "$TMP/$tarball" -C "$dest" --no-same-owner --no-same-permissions \
         2> >(grep -vE 'Cannot mknod|Cannot change' >&2 || true)
 
-    msg "Unpacking debs: $debs"
+    log "Unpacking debs: $debs"
     for pkg in $debs; do
         # Some debs still carry a ./bin/ directory entry; extracting that
         # straight into dest replaces the usrmerge symlink bin -> usr/bin
@@ -108,7 +108,7 @@ make_rootfs() {
         tar -C "$TMP/x" -c . | tar -C "$dest" -x --keep-directory-symlink
     done
 
-    msg "busybox applets: $applets"
+    log "busybox applets: $applets"
     for a in $applets; do
         ln -sf /bin/busybox "$dest/usr/sbin/$a"
     done
@@ -121,7 +121,7 @@ make_rootfs() {
     # all we need, so ship a stub udevd that only creates them and a no-op
     # udevadm.
     # ponytail: stub udev; unpack the udev deb instead if a test needs real udev rules.
-    msg "Installing stub udevd (virtio-ports symlinks only)"
+    log "Installing stub udevd (virtio-ports symlinks only)"
     mkdir -p "$dest/usr/lib/systemd"
     cat > "$dest/usr/lib/systemd/systemd-udevd" <<'STUB'
 #!/bin/sh
@@ -142,19 +142,19 @@ STUB
         # Still boots: vng passes no initramfs for --root, so 9p/overlay must
         # be built into the kernel anyway. Only modprobe inside the guest is
         # empty.
-        msg "KSRC not set: no modules installed. Add them later with:"
-        msg "  make -C <ksrc> ARCH=$KARCH CROSS_COMPILE=${CROSS_COMPILE:-$CROSS} INSTALL_MOD_PATH=$dest modules_install"
+        log "KSRC not set: no modules installed. Add them later with:"
+        log "  make -C <ksrc> ARCH=$KARCH CROSS_COMPILE=${CROSS_COMPILE:-$CROSS} INSTALL_MOD_PATH=$dest modules_install"
     fi
 
-    msg "Done: $dest"
-    msg "Boot: vng_runner -a $ARCH -- -r ${KSRC:-<ksrc>} --root $dest"
+    log "Done: $dest"
+    log "Boot: vng_runner -a $ARCH -- -r ${KSRC:-<ksrc>} --root $dest"
 }
 
 make_initrd() {
     local out bb r
     out="$(realpath -m "${OUT:-./kdump-initrd-$ARCH.img}")"
 
-    msg "Fetching busybox-static ($CODENAME $DEB_ARCH)"
+    log "Fetching busybox-static ($CODENAME $DEB_ARCH)"
     fetch_deb busybox-static "$TMP/x"
     bb="$(find "$TMP/x" -type f -name busybox | head -1)"
     [[ -n $bb ]] || die "no busybox binary in the deb"
@@ -191,7 +191,7 @@ RCS
     chmod +x "$r/etc/init.d/rcS"
 
     ( cd "$r" && find . | cpio -o -H newc --quiet ) > "$out"
-    msg "Done: $out ($(file -b "$bb" | cut -d, -f2))"
+    log "Done: $out ($(file -b "$bb" | cut -d, -f2))"
 }
 
 case $MODE in

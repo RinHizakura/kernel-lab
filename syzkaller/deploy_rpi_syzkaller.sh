@@ -53,8 +53,8 @@ PROCS="${PROCS:-4}"
 # crash leaves the board for you to inspect; flip to true for unattended runs.
 REBOOT="${REBOOT:-false}"
 
-msg() { printf '\033[1;34m::\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"   # log/warn/die
 
 [[ -n "$DEPLOY_TARGET" ]] || die "set DEPLOY_TARGET=user@host (the Pi)"
 [[ -n "$KSRC" ]]          || die "set KSRC=/path/to/arm64/linux tree"
@@ -110,7 +110,7 @@ stage_config() {
     }
 }
 EOF
-    msg "Wrote $CONFIG"
+    log "Wrote $CONFIG"
     cat "$CONFIG"
 }
 
@@ -119,21 +119,21 @@ EOF
 # device timeout so netplan waits it out.
 stage_target_tweaks() {
     ssh "$DEPLOY_TARGET" 'sudo sh -euc "mkdir -p /etc/systemd/system.conf.d; printf \"[Manager]\nDefaultDeviceTimeoutSec=300\n\" > /etc/systemd/system.conf.d/slow-debug-kernel.conf"'
-    msg "Set DefaultDeviceTimeoutSec=300 on $DEPLOY_TARGET (slow-boot wifi fix)"
+    log "Set DefaultDeviceTimeoutSec=300 on $DEPLOY_TARGET (slow-boot wifi fix)"
 }
 
 main() {
-    msg "starting stage: build_syzkaller (arm64)"
+    log "starting stage: build_syzkaller (arm64)"
     stage_build
-    msg "starting stage: target tweaks (slow-boot wifi fix)"
+    log "starting stage: target tweaks (slow-boot wifi fix)"
     stage_target_tweaks
-    msg "starting stage: kernel (cross-build + tryboot deploy to $DEPLOY_TARGET)"
+    log "starting stage: kernel (cross-build + tryboot deploy to $DEPLOY_TARGET)"
     stage_kernel
-    msg "starting stage: config (isolated)"
+    log "starting stage: config (isolated)"
     stage_config
     cat <<EOF
 
-$(msg "Done — the Pi tryboot-ed into the instrumented kernel once.")
+$(log "Done — the Pi tryboot-ed into the instrumented kernel once.")
   1. Verify:   ssh $DEPLOY_TARGET 'uname -r'
   2. Promote (make permanent — REQUIRED before fuzzing; a panic else reverts it):
        $RPI_DEPLOY --promote --target $DEPLOY_TARGET

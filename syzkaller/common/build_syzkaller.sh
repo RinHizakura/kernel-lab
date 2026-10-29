@@ -21,8 +21,8 @@ REPO="https://github.com/google/syzkaller.git"
 REF="${REF:-master}"
 TARGETARCH="${TARGETARCH:-amd64}"
 
-msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../../lib.sh
+source "$SCRIPT_DIR/../../lib.sh"   # log/warn/die, need_tools, shallow_clone
 
 # Map `uname -m` onto Go's release arch naming.
 go_arch() {
@@ -34,23 +34,12 @@ go_arch() {
 }
 
 # --- toolchain check (Debian/Ubuntu package names) --------------------------
-check_deps() {
-    local missing=()
-    command -v curl >/dev/null || missing+=("curl")
-    command -v tar  >/dev/null || missing+=("tar")
-    command -v git  >/dev/null || missing+=("git")
-    command -v gcc  >/dev/null || missing+=("build-essential")
-    command -v make >/dev/null || missing+=("make")
-    if (( ${#missing[@]} )); then
-        die "missing dependencies. Install with:
-    sudo apt update && sudo apt install -y ${missing[*]}"
-    fi
-}
+check_deps() { need_tools curl tar git gcc:build-essential make; }
 
 # --- install the latest stable Go into $GOROOT ------------------------------
 install_go() {
     local version arch tarball url SUDO=""
-    msg "Querying latest stable Go version"
+    log "Querying latest stable Go version"
     version="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n1)" \
         || die "failed to query latest Go version"
     arch="$(go_arch)"
@@ -58,40 +47,30 @@ install_go() {
     url="https://go.dev/dl/${tarball}"
     [[ -w /usr/local ]] || SUDO="sudo"
 
-    msg "Installing $version (linux/$arch) into $GOROOT"
+    log "Installing $version (linux/$arch) into $GOROOT"
     local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
     curl -fSL --retry 3 -o "$tmp/$tarball" "$url" || die "download failed: $url"
     $SUDO rm -rf "$GOROOT"
     $SUDO tar -C /usr/local -xzf "$tmp/$tarball"
     [[ -x "$GOROOT/bin/go" ]] || die "expected go binary at $GOROOT/bin/go after extraction"
     export PATH="$GOROOT/bin:$PATH"
-    msg "Installed: $(go version)"
+    log "Installed: $(go version)"
 }
 
 # --- clone + build syzkaller ------------------------------------------------
 build_syzkaller() {
-    mkdir -p "$BUILD_DIR"
-    if [[ -d "$SRC_DIR/.git" ]]; then
-        msg "Updating existing clone in $SRC_DIR (ref $REF)"
-        git -C "$SRC_DIR" fetch --depth 1 origin "$REF" || die "fetch of $REF failed"
-        git -C "$SRC_DIR" checkout --detach FETCH_HEAD
-    else
-        msg "Cloning $REPO at $REF"
-        git clone --depth 1 --branch "$REF" "$REPO" "$SRC_DIR" 2>/dev/null \
-            || git clone --depth 1 "$REPO" "$SRC_DIR" \
-            || die "clone failed"
-    fi
+    shallow_clone "$REPO" "$REF" "$SRC_DIR"
 
-    msg "Building syzkaller ($REF) for linux/$TARGETARCH"
+    log "Building syzkaller ($REF) for linux/$TARGETARCH"
     make -C "$SRC_DIR" -j"$(nproc)" TARGETOS=linux TARGETARCH="$TARGETARCH"
-    msg "Done. syzkaller binaries in $SRC_DIR/bin"
+    log "Done. syzkaller binaries in $SRC_DIR/bin"
     ls "$SRC_DIR/bin" 2>/dev/null || true
 }
 
 main() {
     check_deps
     if command -v go >/dev/null; then
-        msg "Using existing Go: $(go version)"
+        log "Using existing Go: $(go version)"
     else
         install_go
     fi

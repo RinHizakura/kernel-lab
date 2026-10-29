@@ -33,6 +33,9 @@
 #
 set -euo pipefail
 
+# shellcheck source=../lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib.sh"   # log/warn/die, need_tools, shallow_clone
+
 : "${KSRC:=}"                     # existing kernel tree; empty = clone into BUILD_DIR/linux
 : "${KOUT:=}"                     # O= build dir; empty = $KSRC/build-$ARCH (set by kbuild_check_tree)
 : "${BUILD_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build}"
@@ -47,13 +50,8 @@ set -euo pipefail
 # LOCALVERSION is passed to make only if set (even empty): set-but-empty drops
 # setlocalversion's trailing "+", unset keeps it.
 
-log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
-
 kbuild_check_tools() {
-    command -v bc   >/dev/null || die "bc not installed (sudo apt install bc)"
-    command -v flex >/dev/null || die "flex not installed (sudo apt install flex bison libelf-dev libssl-dev)"
+    need_tools bc "flex:flex bison libelf-dev libssl-dev"
     if [[ -n "$LLVM" ]]; then
         local clang=clang; [[ "$LLVM" == -* ]] && clang="clang$LLVM"
         command -v "$clang" >/dev/null || die "LLVM=$LLVM set but $clang not found in PATH"
@@ -107,16 +105,8 @@ kbuild_merge_fragments() {
 }
 
 kbuild_clone() {
-    command -v git >/dev/null || die "git not installed"
-    mkdir -p "$BUILD_DIR"
-    if [[ -d "$KSRC/.git" ]]; then
-        log "Updating kernel clone (branch $KERNEL_BRANCH)"
-        git -C "$KSRC" fetch --depth 1 origin "$KERNEL_BRANCH" || die "fetch of $KERNEL_BRANCH failed"
-        git -C "$KSRC" checkout --detach FETCH_HEAD
-    else
-        log "Shallow-cloning $KERNEL_REPO ($KERNEL_BRANCH)"
-        git clone --depth 1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" "$KSRC" || die "clone failed"
-    fi
+    need_tools git
+    shallow_clone "$KERNEL_REPO" "$KERNEL_BRANCH" "$KSRC"
 }
 
 main() {

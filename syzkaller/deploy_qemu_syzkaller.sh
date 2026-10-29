@@ -45,8 +45,8 @@ QEMU="${QEMU:-$SCRIPT_DIR/../qemu/install_x86_64/bin/qemu-system-x86_64}"
 GOROOT="/usr/local/go"
 export PATH="$GOROOT/bin:$PATH"
 
-msg() { printf '\033[1;34m::\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"   # log/warn/die, need_tools
 
 # --- kernel: merge syzkaller's fragment on top of defconfig, build ----------
 stage_kernel() {
@@ -57,14 +57,13 @@ stage_kernel() {
 
 # --- image: debootstrap an SSH-able rootfs via syzkaller's own tool ----------
 stage_image() {
-    command -v debootstrap >/dev/null || die "missing debootstrap (sudo apt install debootstrap)"
-    command -v qemu-img    >/dev/null || die "missing qemu-img (sudo apt install qemu-utils)"
+    need_tools debootstrap qemu-img:qemu-utils
     [[ -f "$SRC_DIR/tools/create-image.sh" ]] || die "syzkaller checkout missing; build stage failed?"
     mkdir -p "$IMG_DIR"
-    msg "Creating $RELEASE rootfs (sudo required for loopback mount)"
+    log "Creating $RELEASE rootfs (sudo required for loopback mount)"
     # create-image.sh writes into the current directory.
     ( cd "$IMG_DIR" && "$SRC_DIR/tools/create-image.sh" --distribution "$RELEASE" )
-    msg "image: $IMG_DIR/$RELEASE.img  ssh key: $IMG_DIR/$RELEASE.id_rsa"
+    log "image: $IMG_DIR/$RELEASE.img  ssh key: $IMG_DIR/$RELEASE.id_rsa"
 }
 
 # --- config: write syz-manager config.cfg wired to the artifacts above ------
@@ -81,7 +80,7 @@ stage_config() {
     if [[ -x "$QEMU" ]]; then
         qemu_line="        \"qemu\": \"$QEMU\","
     else
-        msg "warning: $QEMU not executable; relying on PATH qemu-system-x86_64"
+        log "warning: $QEMU not executable; relying on PATH qemu-system-x86_64"
     fi
 
     mkdir -p "$WORKDIR"
@@ -106,20 +105,20 @@ $qemu_line
     }
 }
 EOF
-    msg "Wrote $CONFIG"
+    log "Wrote $CONFIG"
     cat "$CONFIG"
 }
 
 main() {
-    msg "starting stage: build_syzkaller"
+    log "starting stage: build_syzkaller"
     BUILD_DIR="$BUILD_DIR" "$SCRIPT_DIR/common/build_syzkaller.sh"
-    msg "starting stage: kernel"
+    log "starting stage: kernel"
     stage_kernel
-    msg "starting stage: image"
+    log "starting stage: image"
     stage_image
-    msg "starting stage: config"
+    log "starting stage: config"
     stage_config
-    msg "Done. Launch the fuzzer with ./run_syzkaller.sh"
+    log "Done. Launch the fuzzer with ./run_syzkaller.sh"
 }
 
 main "$@"

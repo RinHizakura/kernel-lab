@@ -27,7 +27,8 @@ SRC_DIR="$SCRIPT_DIR/build/syzkaller"
 CONFIG="${CONFIG:-$SCRIPT_DIR/build/config.cfg}"
 QEMU_BIN_DIR="$SCRIPT_DIR/../qemu/install_x86_64/bin"
 
-die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"   # log/warn/die
 
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG; run ./5-gen_config.sh"
 

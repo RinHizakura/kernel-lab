@@ -27,24 +27,19 @@ REPO="${REPO:-https://gitlab.com/qemu-project/qemu.git}"
 TARGETS="${TARGETS:-${ARCH}-softmmu}"
 JOBS="${JOBS:-$(nproc)}"
 
-msg() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"   # log/warn/die, need_tools, shallow_clone
 
 # --- dependency check (Debian/Ubuntu package names) -------------------------
 check_deps() {
-    local missing=()
-    command -v git        >/dev/null || missing+=("git")
-    command -v gcc        >/dev/null || missing+=("build-essential")
-    command -v python3    >/dev/null || missing+=("python3")
-    command -v ninja      >/dev/null || missing+=("ninja-build")
-    command -v pkg-config >/dev/null || missing+=("pkg-config")
-    pkg-config --exists glib-2.0 2>/dev/null || missing+=("libglib2.0-dev")
-    pkg-config --exists pixman-1 2>/dev/null || missing+=("libpixman-1-dev")
-    pkg-config --exists slirp   2>/dev/null || missing+=("libslirp-dev")
-    if (( ${#missing[@]} )); then
-        die "missing build dependencies. Install with:
+    need_tools git gcc:build-essential python3 ninja:ninja-build pkg-config
+    local lib missing=()
+    for lib in glib-2.0:libglib2.0-dev pixman-1:libpixman-1-dev slirp:libslirp-dev; do
+        pkg-config --exists "${lib%%:*}" 2>/dev/null || missing+=("${lib#*:}")
+    done
+    (( ${#missing[@]} )) || return 0
+    die "missing build dependencies. Install with:
     sudo apt update && sudo apt install -y ${missing[*]}"
-    fi
 }
 
 # Resolve the ref to build WITHOUT cloning first: REF env wins, otherwise the
@@ -60,26 +55,6 @@ resolve_ref() {
         | sort -V | tail -1
 }
 
-# Shallow-clone just the requested ref. A full-history clone of QEMU is huge
-# (~500k objects) and prone to mid-transfer disconnects; --depth 1 of one tag
-# is a tiny fraction of that and survives flaky links far better.
-sync_repo() {
-    local ref=$1
-    mkdir -p "$(dirname "$SRC_DIR")"
-    if [[ -d "$SRC_DIR/.git" ]]; then
-        msg "Updating existing clone in $SRC_DIR (ref $ref)"
-        git -C "$SRC_DIR" fetch --depth 1 origin \
-            "+refs/tags/$ref:refs/tags/$ref" "+$ref:$ref" 2>/dev/null \
-            || git -C "$SRC_DIR" fetch --depth 1 origin "$ref" \
-            || die "fetch of $ref failed"
-        git -C "$SRC_DIR" checkout --detach FETCH_HEAD
-    else
-        msg "Shallow-cloning $REPO at $ref"
-        git clone --depth 1 --branch "$ref" "$REPO" "$SRC_DIR" \
-            || die "clone failed"
-    fi
-}
-
 main() {
     check_deps
 
@@ -87,35 +62,35 @@ main() {
     ref="$(resolve_ref)"
     [[ -n "$ref" ]] || die "could not determine a ref to build"
 
-    msg "Building ref : $ref"
-    msg "Targets      : $TARGETS"
-    msg "Build dir    : $BUILD_DIR"
-    msg "Prefix       : $PREFIX"
-    msg "Parallel jobs: $JOBS"
+    log "Building ref : $ref"
+    log "Targets      : $TARGETS"
+    log "Build dir    : $BUILD_DIR"
+    log "Prefix       : $PREFIX"
+    log "Parallel jobs: $JOBS"
 
-    sync_repo "$ref"
+    shallow_clone "$REPO" "$ref" "$SRC_DIR"
 
     # configure/make drive submodules automatically when building from git,
     # but initialise them up front (shallow) so an offline build still works.
-    msg "Fetching submodules"
+    log "Fetching submodules"
     git -C "$SRC_DIR" submodule update --init --recursive --depth 1 \
         || die "submodule fetch failed"
 
-    msg "Configuring"
+    log "Configuring"
     rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
     ( cd "$BUILD_DIR" \
         && "$SRC_DIR/configure" --prefix="$PREFIX" --target-list="$TARGETS" --enable-slirp )
 
-    msg "Building (make -j$JOBS)"
+    log "Building (make -j$JOBS)"
     make -C "$BUILD_DIR" -j"$JOBS"
 
-    msg "Installing to $PREFIX"
+    log "Installing to $PREFIX"
     make -C "$BUILD_DIR" install
 
     local qemu_bin
     qemu_bin="$(ls "$PREFIX"/bin/qemu-system-* 2>/dev/null | head -1 || true)"
-    msg "Done. Installed binaries in $PREFIX/bin"
+    log "Done. Installed binaries in $PREFIX/bin"
 }
 
 main "$@"

@@ -45,7 +45,7 @@ Options:
   -k          Enable kdump testing: crashkernel=512M, 4G guest, vmcoreinfo, and
               kexec -p the booted kernel as dump-capture kernel at shell start
               (see kdump-shell.sh). Its initrd is kdump-initrd-<ARCH>.img in
-              the cwd, built by make_rootfs.sh on first use.
+              KDIR, built by make_rootfs.sh on first use.
   -h          Show this help and exit.
 
 Use -- to separate extra vng arguments; everything after it is passed
@@ -148,15 +148,14 @@ if [[ -n $ARCH ]]; then
     fi
 fi
 
-# kdump: the capture-kernel initrd lives in the cwd like the disk images and
-# is built on first use.
+# kdump: the capture-kernel initrd lives next to the kernel image in KDIR
+# and is built on first use.
 if [[ -n $KDUMP ]]; then
     KIMG=$KDIR/$(kimg_path "$ARCH") || exit 1
-    INITRD=kdump-initrd-${ARCH:-x86_64}.img
+    INITRD=$KDIR/kdump-initrd-${ARCH:-x86_64}.img
     if [[ ! -f $INITRD ]]; then
-        "$SCRIPT_DIR/make_rootfs.sh" "${ARCH:-x86_64}" initrd || exit 1
+        OUT=$INITRD "$SCRIPT_DIR/make_rootfs.sh" "${ARCH:-x86_64}" initrd || exit 1
     fi
-    INITRD=$(realpath "$INITRD")
     # kexec -p reads the whole Image into memory and the capture kernel has
     # to boot inside crashkernel=; a debug (KASAN) Image is ~150M, so both
     # the guest and the reservation need room. Override with --memory after --.
@@ -169,9 +168,7 @@ if [[ -n $KDUMP ]]; then
     # A cross-arch guest boots its own --root and cannot see the host: share
     # what kdump-shell.sh needs (kexec itself comes from the rootfs).
     if [[ -n $ARCH ]]; then
-        for d in $(printf '%s\n' "$SCRIPT_DIR" "$KDIR" "${INITRD%/*}" | sort -u); do
-            OPT+=("--rodir=$d=$d")
-        done
+        OPT+=("--rodir=$SCRIPT_DIR=$SCRIPT_DIR" "--rodir=$KDIR=$KDIR")
     fi
 fi
 

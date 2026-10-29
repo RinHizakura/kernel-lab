@@ -172,6 +172,7 @@ if [[ -n $KDUMP ]]; then
         OPT+=(--memory 4G)
     fi
     GUEST_SHELL=$SCRIPT_DIR/kdump-shell.sh
+    OPT+=(--user root)   # kexec -p and the sysrq trigger both need root
     # A cross-arch guest boots its own --root and cannot see the host: share
     # what kdump-shell.sh needs (kexec itself comes from the rootfs).
     if [[ -n $ARCH ]]; then

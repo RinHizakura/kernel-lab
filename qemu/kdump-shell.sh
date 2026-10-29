@@ -4,11 +4,12 @@
 # filesystem is visible in the guest at the same paths.
 
 karg() { grep -oE "(^| )$1=[^ ]+" /proc/cmdline | cut -d= -f2-; }
+PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin   # kexec lives in sbin
 
 IMG=$(karg kdump_kernel)
 INITRD=$(karg kdump_initrd)
 # Reuse the console= the running kernel got from vng (ttyS0/ttyAMA0/hvc0...).
-CONSOLE=$(grep -oE 'console=[^ ]+' /proc/cmdline | tr '\n' ' ')
+CONSOLE=$(grep -oE 'console=[^ ]+' /proc/cmdline | sort -u | tr '\n' ' ')
 
 if kexec -p "$IMG" --initrd="$INITRD" \
         --append="$CONSOLE 1 irqpoll nr_cpus=1 reset_devices"; then

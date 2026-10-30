@@ -70,16 +70,21 @@ What `-k` does:
 - reserves `crashkernel=512M`, gives the guest 4G, adds `-device vmcoreinfo`
 - builds `kdump-initrd-<ARCH>.img` next to the kernel image on first use
   (Ubuntu's static busybox as a newc cpio)
-- replaces the guest shell with `kdump-shell.sh`, which `kexec -p` loads
-  the running kernel as the dump-capture kernel and then drops you into
-  your normal shell
+- shares the build dir read-write over 9p (`--force-9p`: virtiofs cannot
+  reconnect after a kexec) and replaces the guest shell with
+  `kdump-shell.sh`, which `kexec -p` loads the running kernel as the
+  dump-capture kernel and then drops you into your normal shell
 
 Inside the guest:
 
 ```bash
 sudo sh -c 'echo c > /proc/sysrq-trigger'   # capture kernel boots into a busybox shell
-mount /dev/sda /mnt && cp /proc/vmcore /mnt/   # with -d usb-storage
+cp /proc/vmcore /mnt/                       # /mnt is the build dir on the host
 ```
+
+Then on the host: `drgn -c build-vng-x86_64/vmcore -s build-vng-x86_64/vmlinux`.
+The dump is as large as the guest's memory; `gzip -c /proc/vmcore > /mnt/vmcore.gz`
+if that matters. A disk from `-d` is for testing that device, not for dumps.
 
 The guest images belong to `qemu/make_rootfs.sh`: `paths ARCH KDIR` says
 where they are, `ensure ARCH KDIR` makes them exist and match the kernel in

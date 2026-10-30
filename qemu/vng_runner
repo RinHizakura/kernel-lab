@@ -25,7 +25,9 @@ Options:
   -k          Enable kdump testing: crashkernel=512M, 4G guest, vmcoreinfo, and
               kexec -p the booted kernel as dump-capture kernel at shell start
               (see kdump-shell.sh). Its initrd is KDIR/kdump-initrd-<ARCH>.img,
-              built by make_rootfs.sh on first use.
+              built by make_rootfs.sh on first use. KDIR is shared read-write
+              over 9p and the capture kernel mounts it on /mnt, so
+              cp /proc/vmcore /mnt/ lands the dump next to the kernel.
   -n          Print the vng command line and exit; touches nothing.
   -h          Show this help and exit.
 
@@ -133,16 +135,20 @@ if [[ -n $KDUMP ]]; then
     # kexec -p reads the whole Image into memory and the capture kernel has
     # to boot inside crashkernel=; a debug (KASAN) Image is ~150M, so both
     # the guest and the reservation need room. Override with --memory after --.
-    BOOTARGS+="crashkernel=512M kdump_kernel=$KIMG kdump_initrd=$INITRD"
+    BOOTARGS+="crashkernel=512M kdump_kernel=$KIMG kdump_initrd=$INITRD kdump_dir=$KDIR"
     QEMU_OPTS+=" -device vmcoreinfo"
     if [[ " $* " != *" --memory "* ]]; then
         OPT+=(--memory 4G)
     fi
     GUEST_SHELL=$SCRIPT_DIR/kdump-shell.sh
-    # A cross-arch guest boots its own --root and cannot see the host: share
-    # what kdump-shell.sh needs (kexec itself comes from the rootfs).
+    # KDIR goes in read-write over 9p: the capture kernel remounts the same
+    # share (QEMU keeps it across kexec; virtiofsd would not reconnect, hence
+    # --force-9p) and that is where /proc/vmcore gets saved. A cross-arch
+    # guest boots its own --root and cannot see the host, so it also needs
+    # the script dir for kdump-shell.sh (kexec itself comes from the rootfs).
+    OPT+=("--rwdir=$KDIR=$KDIR" --force-9p)
     if [[ -n $ROOTFS ]]; then
-        OPT+=("--rodir=$SCRIPT_DIR=$SCRIPT_DIR" "--rodir=$KDIR=$KDIR")
+        OPT+=("--rodir=$SCRIPT_DIR=$SCRIPT_DIR")
     fi
 fi
 

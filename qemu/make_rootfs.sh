@@ -197,6 +197,17 @@ mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev
 mount -t debugfs none /sys/kernel/debug
+exec >/dev/console 2>&1   # init had no console before devtmpfs; show what follows
+# kdump-shell.sh passes the 9p tag of the kernel's build dir on the host.
+tag=
+for w in $(cat /proc/cmdline); do
+    case $w in kdump_tag=*) tag=${w#kdump_tag=} ;; esac
+done
+if [ -n "$tag" ] && mount -t 9p -o trans=virtio,version=9p2000.L,msize=512000 "$tag" /mnt; then
+    echo "kdump: /mnt is the kernel build dir on the host; save with: cp /proc/vmcore /mnt/" | tee /dev/kmsg
+else
+    echo "kdump: no 9p share mounted on /mnt (tag '$tag')" | tee /dev/kmsg
+fi
 RCS
     chmod +x "$r/etc/init.d/rcS"
 

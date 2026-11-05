@@ -398,7 +398,11 @@ config_no_thp() {
 # --debug: detectors for workload soak runs
 config_debug() {
   if [ "$DO_DEBUG" != 1 ]; then
-    kbuild_disable KASAN UBSAN DEBUG_LIST PROVE_LOCKING LOCKDEP DEBUG_ATOMIC_SLEEP DEBUG_KMEMLEAK
+    # PROVE_LOCKING/DEBUG_LIST select user-visible symbols that survive a later
+    # non-debug build and re-select LOCKDEP via olddefconfig; clear them too.
+    kbuild_disable KASAN UBSAN DEBUG_LIST LIST_HARDENED PROVE_LOCKING LOCKDEP DEBUG_LOCK_ALLOC \
+      DEBUG_WW_MUTEX_SLOWPATH DEBUG_SPINLOCK DEBUG_MUTEXES DEBUG_RT_MUTEXES DEBUG_RWSEMS \
+      DEBUG_ATOMIC_SLEEP DEBUG_KMEMLEAK
     return
   fi
   log "Ensuring debug detectors (KASAN, UBSAN_BOUNDS, DEBUG_LIST, PROVE_LOCKING, DEBUG_ATOMIC_SLEEP, KMEMLEAK)"

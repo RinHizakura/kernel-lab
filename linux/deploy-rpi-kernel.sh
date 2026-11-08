@@ -381,8 +381,8 @@ config_function_align64() {
 
 # Enable the timerlat tracer (FTRACE, TIMERLAT_TRACER) so the suite can measure
 config_tracing() {
-  log "Ensuring timerlat tracer (FTRACE, TIMERLAT_TRACER)"
-  kbuild_enable FTRACE TIMERLAT_TRACER
+  log "Ensuring rtla tracers (FTRACE, TIMERLAT_TRACER, OSNOISE_TRACER, HIST_TRIGGERS)"
+  kbuild_enable FTRACE TIMERLAT_TRACER OSNOISE_TRACER HIST_TRIGGERS  # rtla osnoise hist needs the hist trigger
 }
 
 # arm64 defconfig ships THP in "always" mode, which is a net win on a desktop/server

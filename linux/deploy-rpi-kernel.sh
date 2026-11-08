@@ -427,20 +427,20 @@ config_debug() {
 # ---------------------------------------------------------------------------
   # Force-apply the tryboot patch before building (idempotent). Without it,
   # `reboot "0 tryboot"` is a no-op on mainline and the A/B deploy silently
-  # never boots new/. Skip if already applied; die if it no longer applies
-  # (after a rebase) rather than building a half-patched kernel.
-  KERNEL_PATCH="$SCRIPT_DIR/0001-firmware-rpi-tryboot-reboot.patch"
-  if [ -f "$KERNEL_PATCH" ]; then
+  # never boots new/. tryboot/ holds one version per kernel series whose
+  # context differs (7.3.patch, 7.4.patch, ...); the first that is already
+  # applied or applies cleanly wins, so one tree can be checked out at any of
+  # them. None fitting means a rebase moved the context: add a new version
+  # rather than build a half-patched kernel.
+  applied=""
+  for KERNEL_PATCH in "$SCRIPT_DIR"/tryboot/*.patch; do
     if git -C "$SRC_DIR" apply --reverse --check "$KERNEL_PATCH" 2>/dev/null; then
-      log "tryboot patch already applied"
+      log "tryboot patch already applied (${KERNEL_PATCH##*/})"; applied=1; break
     elif git -C "$SRC_DIR" apply "$KERNEL_PATCH" 2>/dev/null; then
-      log "Applied tryboot patch"
-    else
-      die "tryboot patch does not apply (and is not already applied): $KERNEL_PATCH"
+      log "Applied tryboot patch (${KERNEL_PATCH##*/})"; applied=1; break
     fi
-  else
-    die "tryboot patch not found: $KERNEL_PATCH"
-  fi
+  done
+  [ -n "$applied" ] || die "no tryboot patch in $SCRIPT_DIR/tryboot/ applies to $SRC_DIR"
 
   if [ "$DO_DEFCONFIG" = force ] || { [ "$DO_DEFCONFIG" = auto ] && [ ! -f "$KOUT/.config" ]; }; then
     log "Generating .config from $DEFCONFIG"

@@ -395,6 +395,12 @@ config_no_thp() {
   kbuild_disable TRANSPARENT_HUGEPAGE
 }
 
+# slowpoke's bio benchmark runs fio against /dev/nullb0: the block layer with no media behind it
+config_null_blk() {
+  log "Ensuring null_blk (BLK_DEV_NULL_BLK=y)"
+  kbuild_enable BLK_DEV_NULL_BLK
+}
+
 # --debug: detectors for workload soak runs
 config_debug() {
   if [ "$DO_DEBUG" != 1 ]; then
@@ -453,6 +459,7 @@ config_debug() {
   config_function_align64
   config_tracing
   config_no_thp
+  config_null_blk
   config_debug
 
   # Apply any extra fragments provided by the user (e.g. syzkaller KCOV/KASAN)

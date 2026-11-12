@@ -23,8 +23,9 @@ set -euo pipefail
 
 # ── Config ───────────────────────────────────────────
 : "${KSRC:=}"
-WIN_HOME_WSL=""          # Windows home (WSL view)
-WIN_HOME_WIN=""              # same dir (Windows view, for .wslconfig)
+# Windows home, WSL view and Windows view (for .wslconfig). Override by env.
+: "${WIN_HOME_WSL:=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")}"
+: "${WIN_HOME_WIN:=$(wslpath -m "$WIN_HOME_WSL")}"
 WSLCONFIG="$WIN_HOME_WSL/.wslconfig"
 # ─────────────────────────────────────────────────────
 
